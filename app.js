@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.4';
+const VERSION = '1.5';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -44,7 +44,7 @@ const DEFAULT_FOLDERS = [
   { id: 'fin-irs', parent: 'financas', name: 'IRS e impostos', kw: ['!irs', '!nota de liquidacao', '!declaracao de rendimentos', 'modelo 3', '!reembolso', 'imposto', 'coleta', '!demonstracao de liquidacao', 'e-fatura', 'rendimento coletavel'] },
   { id: 'fin-ss', parent: 'financas', name: 'Segurança Social', kw: ['!seguranca social', '!niss', 'contribuicoes', 'prestacoes sociais', 'abono', 'subsidio de desemprego', 'trabalhadores independentes'] },
   { id: 'fin-banco', parent: 'financas', name: 'Banco e crédito', kw: ['!extrato', 'iban', '!credito', 'emprestimo', 'prestacao', 'taeg', 'cartao de credito', 'caixa geral de depositos', 'millennium', 'santander', 'novo banco', 'bpi', 'montepio', 'credito agricola', 'activobank', 'revolut', 'banco', 'saldo'] },
-  { id: 'fin-seguros', parent: 'financas', name: 'Seguros', kw: ['!apolice', 'seguro', 'premio', 'tomador do seguro', 'segurado', 'fidelidade', 'tranquilidade', 'allianz', 'ageas', 'generali', 'zurich', 'liberty', 'sinistro', 'acidente de trabalho'] },
+  { id: 'fin-seguros', parent: 'financas', name: 'Seguros', kw: ['apolice', 'seguro', 'premio', 'tomador do seguro', 'segurado', 'fidelidade', 'tranquilidade', 'allianz', 'ageas', 'generali', 'zurich', 'liberty', 'sinistro', 'acidente de trabalho'] },
   { id: 'casa', name: 'Casa', emoji: '🏠', kw: ['habitacao', 'imovel', 'morada de fornecimento', 'local de consumo', 'fracao'] },
   { id: 'casa-renda', parent: 'casa', name: 'Renda e arrendamento', kw: ['!contrato de arrendamento', '!recibo de renda', 'renda', 'senhorio', 'senhoria', 'arrendatario', 'inquilino', 'arrendamento'] },
   { id: 'casa-cond', parent: 'casa', name: 'Condomínio', kw: ['!condominio', 'quota', 'quotas', 'administracao do condominio', 'assembleia de condominos', 'condominos', 'fundo comum de reserva'] },
@@ -139,11 +139,11 @@ function amountsIn(s) {
 }
 function findAmount(n) {
   const lines = n.split('\n');
-  const keys = ['total a pagar', 'valor a pagar', 'montante a pagar', 'importancia a pagar', 'a pagar', 'total geral', 'total documento', 'total', 'valor total', 'montante', 'importancia', 'valor'];
+  const keys = ['liquido a receber', 'total liquido', 'valor liquido', 'liquido a pagar', 'total a pagar', 'valor a pagar', 'montante a pagar', 'importancia a pagar', 'valor a reembolsar', 'a pagar', 'total geral', 'total documento', 'total', 'valor total', 'montante', 'importancia', 'valor'];
   for (const k of keys) {
     for (let i = 0; i < lines.length; i++) {
       const j = lines[i].indexOf(k); if (j < 0) continue;
-      if (/subtotal|total iva|total de iva|total s\/ iva|total sem iva|base/.test(lines[i]) && k === 'total') continue;
+      if (k === 'total' && /subtotal|total iva|total de iva|total s\/ iva|total sem iva|base|descontos|abonos|ilíquido|iliquido/.test(lines[i])) continue;
       let a = amountsIn(lines[i].slice(j));
       if (!a.length && lines[i + 1]) a = amountsIn(lines[i + 1]);
       if (a.length) return a[a.length - 1].v;
@@ -180,47 +180,115 @@ function wordRx(k) { return new RegExp('(^|[^a-z0-9])' + k.replace(/[.*+?^${}()|
 const RXC = new Map(); function rxFor(k) { let r = RXC.get(k); if (!r) { r = wordRx(k); RXC.set(k, r); } r.lastIndex = 0; return r; }
 function countKw(n, k) { const r = rxFor(k); let c = 0; while (r.exec(n) && c < 2) c++; return c; }
 function findEntity(text, n) {
+  const lab = /(?:^|\n)\s*(?:senhorio|senhoria|emitente|fornecedor|entidade empregadora|empregador|entidade patronal|vendedor)\s*:?\s*([^\n,;|]{3,45})/i.exec(text);
+  if (lab) { const v = lab[1].split(/\.\s/)[0].replace(/\s*(NIF|NIPC|Contribuinte).*$/i, '').trim(); if (v.length >= 3) return v; }
+  const firstLines = text.split('\n').map(x => x.trim()).filter(Boolean).slice(0, 4).join('\n'), fl = norm(firstLines);
+  for (const [k, name] of ENTITIES) { const r = rxFor(k); if (r.exec(fl)) return name; }
+  const cand = firstLineEntity(text); if (cand) return cand;
   let best = null;
-  for (const [k, name] of ENTITIES) { const r = rxFor(k); const m = r.exec(n); if (m && (!best || m.index < best.i)) best = { i: m.index, name }; }
-  if (/\bNOS\b/.test(text) && (!best || text.search(/\bNOS\b/) < best.i)) best = { i: 0, name: 'NOS' };
-  if (best) return best.name;
-  const bad = /fatura|recibo|data|pagina|original|duplicado|rep[uú]blica|certificado|n\.?º|contribuinte|nif|exmo|cliente|documento|^\W*$/i;
-  for (const l of text.split('\n').slice(0, 8)) {
+  const cut = Math.max(350, Math.floor(n.length * 0.3)); const hn = n.slice(0, cut), ht = text.slice(0, cut);
+  for (const [k, name] of ENTITIES) { const r = rxFor(k); const m = r.exec(hn); if (m && (!best || m.index < best.i)) best = { i: m.index, name }; }
+  if (/\bNOS\b/.test(ht) && (!best || ht.search(/\bNOS\b/) < best.i)) best = { i: 0, name: 'NOS' };
+  return best ? best.name : '';
+}
+function firstLineEntity(text) {
+  const bad = /fatura|recibo|data|pagina|original|duplicado|rep[uú]blica|certificado|n\.?º|contribuinte|nif|exmo|cliente|documento|aviso|nome|tomador|arrendat|inquilino|per[ií]odo|^\W*$|:/i;
+  for (const l of text.split('\n').slice(0, 6)) {
     const s = l.trim(); const letters = (s.match(/[A-Za-zÀ-ÿ]/g) || []).length;
-    if (s.length >= 3 && s.length <= 40 && letters / s.length > 0.65 && !bad.test(s)) return s.replace(/\s+/g, ' ');
+    if (s.length >= 3 && s.length <= 45 && letters / s.length > 0.65 && !bad.test(s)) return s.replace(/\s+/g, ' ').replace(/[,.\s]+$/, '');
   }
   return '';
 }
 const TYPES = [['nota de liquidacao', 'Nota de liquidação'], ['demonstracao de liquidacao', 'Liquidação'], ['fatura-recibo', 'Fatura-recibo'], ['fatura recibo', 'Fatura-recibo'], ['fatura simplificada', 'Fatura simplificada'], ['nota de credito', 'Nota de crédito'], ['recibo de vencimento', 'Recibo de vencimento'], ['auto de contraordenacao', 'Auto de contraordenação'], ['ficha de inspecao', 'Ficha de inspeção'], ['contrato', 'Contrato'], ['fatura', 'Fatura'], ['recibo', 'Recibo'], ['orcamento', 'Orçamento'], ['apolice', 'Apólice'], ['aviso', 'Aviso'], ['notificacao', 'Notificação'], ['declaracao', 'Declaração'], ['certificado', 'Certificado'], ['extrato', 'Extrato'], ['receita', 'Receita'], ['relatorio', 'Relatório'], ['guia', 'Guia'], ['carta', 'Carta']];
 function findType(n) {
-  let best = null; const head = n.slice(0, Math.max(600, Math.floor(n.length * 0.5)));
+  let best = null; const head = n.slice(0, Math.max(400, Math.floor(n.length * 0.35)));
   for (const [k, name] of TYPES) { const r = rxFor(k); const m = r.exec(head); if (m && (!best || m.index < best.i)) best = { i: m.index, name }; }
   return best ? best.name : '';
 }
 function ignoredNifs() { return (S.set.ignoreNifs || '').split(/[^\d]+/).filter(x => x.length === 9); }
 
+/* Assinaturas: conjuntos de expressões que, juntas, identificam um tipo de documento com segurança */
+const DOC_SIGS = [
+  { f: 'trab-rec', type: 'Recibo de vencimento', min: 3, k: ['recibo de vencimento', 'vencimento base', 'liquido a receber', 'total de abonos', 'total abonos', 'total de descontos', 'total descontos', 'subsidio de alimentacao', 'subsidio alimentacao', 'seguranca social', 'irs', 'remuneracao', 'categoria profissional', 'niss', 'vencimento', 'abonos', 'descontos', 'retencao', 'horas extra', 'diuturnidades', 'ferias', 'natal'] },
+  { f: 'car-iuc', type: 'IUC', min: 2, k: ['imposto unico de circulacao', 'iuc', 'ano do imposto', 'matricula', 'categoria b', 'cilindrada', 'documento de cobranca'] },
+  { f: 'fin-irs', type: 'IRS', min: 2, k: ['nota de liquidacao', 'demonstracao de liquidacao', 'rendimento coletavel', 'coleta', 'reembolso', 'declaracao de rendimentos', 'modelo 3', 'irs', 'deducoes a coleta', 'imposto a pagar'] },
+  { f: 'casa-energia', type: 'Fatura de eletricidade', min: 2, k: ['kwh', 'potencia contratada', 'cpe', 'eletricidade', 'energia ativa', 'termo de potencia', 'gas natural', 'cui', 'contribuicao audiovisual', 'imposto especial de consumo'] },
+  { f: 'casa-agua', type: 'Fatura da água', min: 3, k: ['agua', 'm3', 'saneamento', 'residuos', 'contador', 'tarifa fixa', 'tarifa variavel', 'consumo de agua'] },
+  { f: 'casa-telecom', type: 'Fatura de telecomunicações', min: 3, k: ['tarifario', 'internet', 'mensalidade', 'telemovel', 'chamadas', 'dados moveis', 'fibra', 'televisao', 'box', 'roaming', 'numero de telefone', 'pacote'] },
+  { f: 'casa-renda', type: 'Recibo de renda', min: 2, k: ['renda', 'senhorio', 'senhoria', 'arrendatario', 'contrato de arrendamento', 'recibo de renda', 'locado', 'inquilino'] },
+  { f: 'casa-cond', type: 'Condomínio', min: 2, k: ['condominio', 'quota', 'quotas', 'fracao', 'fundo comum de reserva', 'administracao', 'condominos'] },
+  { f: 'casa-imi', type: 'IMI', min: 2, k: ['imposto municipal sobre imoveis', 'imi', 'valor patrimonial', 'artigo matricial', 'predio', 'caderneta predial'] },
+  { f: 'car-insp', type: 'Ficha de inspeção', min: 3, k: ['inspecao', 'periodica', 'deficiencias', 'centro de inspecao', 'resultado', 'aprovado', 'reprovado', 'proxima inspecao', 'quilometros'] },
+  { f: 'car-seg', type: 'Seguro automóvel', min: 3, k: ['apolice', 'seguro automovel', 'carta verde', 'matricula', 'responsabilidade civil', 'danos proprios', 'tomador', 'premio', 'veiculo seguro'] },
+  { f: 'fin-seguros', type: 'Apólice de seguro', min: 3, k: ['apolice', 'tomador', 'premio', 'seguradora', 'coberturas', 'franquia', 'capital seguro', 'segurado', 'periodo de seguro', 'condicoes particulares'] },
+  { f: 'car-multas', type: 'Multa', min: 2, k: ['contraordenacao', 'coima', 'infracao', 'ansr', 'auto de contraordenacao', 'codigo da estrada', 'excesso de velocidade', 'estacionamento proibido'] },
+  { f: 'car-cv', type: 'Compra e venda', min: 3, k: ['comprador', 'vendedor', 'matricula', 'preco', 'declaracao de venda', 'contrato de compra e venda', 'veiculo', 'requerimento de registo'] },
+  { f: 'car-port', type: 'Portagens', min: 2, k: ['via verde', 'portagem', 'portagens', 'identificador', 'brisa', 'ascendi', 'passagens'] },
+  { f: 'fin-ss', type: 'Segurança Social', min: 2, k: ['seguranca social', 'niss', 'contribuicoes', 'trabalhador independente', 'declaracao trimestral', 'base de incidencia', 'prestacao'] },
+  { f: 'fin-banco', type: 'Extrato bancário', min: 3, k: ['extrato', 'iban', 'saldo', 'movimentos', 'saldo disponivel', 'saldo contabilistico', 'debito', 'credito', 'conta n'] },
+  { f: 'saude-cons', type: 'Saúde', min: 2, k: ['utente', 'consulta', 'taxa moderadora', 'sns', 'medico', 'exame', 'analises', 'receita', 'hospital', 'centro de saude', 'diagnostico'] },
+  { f: 'animais', type: 'Veterinário', min: 2, k: ['veterinari', 'vacina', 'microchip', 'canideo', 'raca', 'desparasitacao', 'antirrabica'] },
+  { f: 'trab-cont', type: 'Contrato de trabalho', min: 2, k: ['contrato de trabalho', 'periodo experimental', 'entidade empregadora', 'trabalhador', 'retribuicao', 'horario de trabalho', 'termo certo', 'termo incerto'] },
+];
+let nbCache = null; // modelo que aprende com os documentos que confirmaste
+function nbTokens(n) { return new Set((n.match(/[a-z]{4,}/g) || []).filter(w => w.length <= 20)); }
+function nbModel() {
+  if (nbCache) return nbCache;
+  const m = { f: {}, vocab: new Set(), total: 0 };
+  for (const d of S.docs) {
+    if (d.review || !d.folder || d.folder === 'outros' || !d._t) continue;
+    const F = m.f[d.folder] ||= { docs: 0, n: 0, c: new Map() }; F.docs++; m.total++;
+    for (const t of nbTokens(d._t)) { F.c.set(t, (F.c.get(t) || 0) + 1); F.n++; m.vocab.add(t); }
+  }
+  return nbCache = m;
+}
+function nbScores(n) {
+  const m = nbModel(); const ids = Object.keys(m.f).filter(id => m.f[id].docs >= 1 && folderById(id)); if (ids.length < 2 && m.total < 2) return {};
+  const toks = [...nbTokens(n)]; const V = m.vocab.size + 1; const ll = {};
+  for (const id of ids) { const F = m.f[id]; let s = Math.log(F.docs / m.total); for (const t of toks) if (m.vocab.has(t)) s += Math.log(((F.c.get(t) || 0) + 0.5) / (F.docs + 1)); ll[id] = s; }
+  const mx = Math.max(...Object.values(ll)); let z = 0; for (const id in ll) z += Math.exp(ll[id] - mx);
+  const p = {}; for (const id in ll) p[id] = Math.exp(ll[id] - mx) / z; return p;
+}
 function analyze(text) {
   const n = norm(text);
   const dates = findDates(n);
-  const due = dateAfter(n, dates, ['data limite de pagamento', 'data-limite de pagamento', 'data limite', 'data-limite', 'pagar ate', 'pagamento ate', 'a pagar ate', 'prazo de pagamento', 'data de vencimento', 'vencimento', 'valido ate', 'ate ao dia', 'prazo']);
-  let date = dateAfter(n, dates, ['data de emissao', 'data emissao', 'data da fatura', 'data do documento', 'emitido em', 'emitida em', 'data:', 'data '], 40);
-  if (!date) { const d = dates.find(x => x.iso !== due); date = d ? d.iso : null; }
+  let due = dateAfter(n, dates, ['data limite de pagamento', 'data-limite de pagamento', 'data limite', 'data-limite', 'pagar ate', 'pagamento ate', 'a pagar ate', 'prazo de pagamento', 'data de vencimento', 'data vencimento', 'valido ate', 'ate ao dia', 'prazo limite']);
+  const nm = n.replace(/data de (admissao|nascimento|validade|inicio de funcoes|entrada|antiguidade|vencimento)|data[ -]limite|proxima inspecao|valido ate|validade/g, m => '#'.repeat(m.length));
+  let date = dateAfter(nm, findDates(nm), ['data de emissao', 'data emissao', 'data da fatura', 'data do documento', 'emitido em', 'emitida em', 'data de recebimento', 'periodo', 'referente a', 'data:', 'data '], 40);
+  if (!date) { const lim = addDays(todayISO(), 1), d = findDates(nm).find(x => x.iso !== due && x.iso <= lim); date = d ? d.iso : null; }
   const ign = ignoredNifs();
   const nifs = findNifs(n).filter(x => !ign.includes(x));
   const nif = nifs[0] || '';
   const entity = findEntity(text, n);
   const amount = findAmount(n);
   const plate = findPlate(text);
-  const type = findType(n);
-  // pontuação das pastas
+  let type = findType(n);
+  // pontuação das pastas: o cabeçalho conta mais; expressões partidas pelo OCR também contam
+  const cut = Math.max(400, Math.floor(n.length * 0.35)), head = n.slice(0, cut);
+  const nc = n.replace(/[^a-z0-9]/g, ''), hc = head.replace(/[^a-z0-9]/g, '');
+  const kwHit = k => {
+    let c = countKw(n, k), ch = countKw(head, k);
+    const kc = k.replace(/[^a-z0-9]/g, '');
+    if (!c && kc.length >= 8 && nc.includes(kc)) { c = 1; ch = hc.includes(kc) ? 1 : 0; }
+    return ch + (c - ch) * 0.5;
+  };
   const own = {};
   for (const f of S.folders) {
     let s = 0;
-    for (let k of f.kw || []) { let w = 1; if (k.startsWith('!')) { w = 4; k = k.slice(1); } else if (k.includes(' ')) w = 2; if (!k) continue; s += w * countKw(n, k); }
+    for (let k of f.kw || []) { let w = 1; if (k.startsWith('!')) { w = 4; k = k.slice(1); } else if (k.includes(' ')) w = 2; if (!k) continue; s += w * kwHit(k); }
     own[f.id] = s;
+  }
+  const sigType = {};
+  for (const g of DOC_SIGS) {
+    if (!folderById(g.f)) continue;
+    let hits = 0; for (const k of g.k) if (kwHit(k) > 0) hits++;
+    if (hits >= g.min) { own[g.f] = (own[g.f] || 0) + 6 * hits; sigType[g.f] = g.type; }
   }
   const score = {};
   for (const f of S.folders) score[f.id] = own[f.id] + (f.parent ? 0.5 * (own[f.parent] || 0) : 0) + (f.parent ? 0.01 : 0);
+  // o que aprendeu com os documentos que confirmaste
+  const nb = nbScores(n);
+  for (const id in nb) if (nb[id] > 0.5 && score[id] !== undefined) score[id] += 20 * nb[id];
   // regras aprendidas
   const ek = 'ent:' + norm(entity);
   for (const k of [...nifs.map(x => 'nif:' + x), entity ? ek : null]) { const f = k && S.rules[k]; if (f && score[f] !== undefined) score[f] += 40; }
@@ -228,6 +296,8 @@ function analyze(text) {
   const folder = ranked.length && ranked[0][1] >= 3 ? ranked[0][0] : 'outros';
   const sugg = ranked.filter(([, s]) => s >= 2).slice(0, 4).map(([id]) => id);
   const fo = folderById(folder);
+  if (sigType[folder] && ['', 'Fatura', 'Recibo', 'Aviso', 'Carta', 'Apólice', 'Declaração', 'Guia', 'Certificado', 'Notificação', 'Extrato', 'Fatura simplificada'].includes(type)) type = sigType[folder];
+  if (folder === 'trab-rec') due = null;
   const label = type || (fo && fo.id !== 'outros' ? fo.name : 'Documento');
   const when = date ? ` · ${MES_C[+date.slice(5, 7) - 1]} ${date.slice(0, 4)}` : '';
   const title = [label, entity && !norm(label).includes(norm(entity)) && !norm(entity).includes(norm(label)) ? entity : '', plate || ''].filter(Boolean).join(' ').slice(0, 70) + when;
@@ -274,7 +344,7 @@ function indexDoc(d) {
   return d;
 }
 function clean(d) { const o = {}; for (const k in d) if (k[0] !== '_') o[k] = d[k]; return o; }
-async function saveDoc(d) { d.updated = Date.now(); indexDoc(d); await dbPut('docs', clean(d)); }
+async function saveDoc(d) { d.updated = Date.now(); indexDoc(d); nbCache = null; await dbPut('docs', clean(d)); }
 const docById = id => S.docs.find(d => d.id === id);
 function sortDocs(a) { return a.sort((x, y) => (y.date || '').localeCompare(x.date || '') || y.created - x.created); }
 
@@ -1431,10 +1501,20 @@ async function importBackup(file) {
   try { DB = await idbOpen(); } catch (e) { $('#view').innerHTML = `<div class="empty"><p>Este browser não deixa guardar dados (${esc(e.message)}). Sai do modo privado e tenta outra vez.</p></div>`; return; }
   S.folders = (await dbGet('kv', 'folders')) || DEFAULT_FOLDERS.map(f => ({ ...f, kw: [...f.kw] }));
   S.rules = (await dbGet('kv', 'rules')) || {};
+  { const fs = S.folders.find(f => f.id === 'fin-seguros'); if (fs && fs.kw.includes('!apolice')) { fs.kw = fs.kw.map(k => k === '!apolice' ? 'apolice' : k); await saveFolders(); } }
   S.cars = (await dbGet('kv', 'cars')) || [];
   S.set = Object.assign(S.set, (await dbGet('kv', 'set')) || {});
   S.docs = ((await dbAll('docs')) || []).map(indexDoc);
   L.cfg = (await dbGet('kv', 'lock')) || null;
+  if ((S.set.anaV || 1) < 2) { // nova versão da identificação: reavaliar os documentos ainda por confirmar
+    for (const d of S.docs) if (d.review && d.text) {
+      const a = analyze(d.text);
+      Object.assign(d, { folder: a.folder, sugg: a.sugg, type: a.type, entity: a.entity || d.entity, amount: a.amount ?? d.amount, due: a.due || '', date: a.date || d.date });
+      if (!d.files?.length || a.type || a.entity) d.title = a.title;
+      await saveDoc(d);
+    }
+    S.set.anaV = 2; await dbPut('kv', S.set, 'set');
+  }
   if (L.cfg) lockNow();
   window.addEventListener('hashchange', render);
   render();
