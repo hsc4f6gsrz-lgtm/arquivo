@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.3';
+const VERSION = '1.4';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -35,7 +35,7 @@ const dbPut = (st, v, k) => tx(st, 'readwrite', s => (k === undefined ? s.put(v)
 const dbDel = (st, k) => tx(st, 'readwrite', s => s.delete(k));
 
 /* ---------------- Estado ---------------- */
-const S = { docs: [], folders: [], rules: {}, set: { ignoreNifs: '', lastBackup: 0, lastFull: 0, bkFreq: '7', bkSnooze: 0 }, draft: null, q: '' };
+const S = { docs: [], cars: [], carFilter: 'todos', carTab: 'contas', carYear: null, carDraft: null, pendingCar: null, folders: [], rules: {}, set: { ignoreNifs: '', lastBackup: 0, lastFull: 0, bkFreq: '7', bkSnooze: 0 }, draft: null, q: '' };
 
 /* ---------------- Pastas por omissão ---------------- */
 // "!" = palavra-chave forte. Tudo sem acentos e em minúsculas.
@@ -184,7 +184,7 @@ function findEntity(text, n) {
   for (const [k, name] of ENTITIES) { const r = rxFor(k); const m = r.exec(n); if (m && (!best || m.index < best.i)) best = { i: m.index, name }; }
   if (/\bNOS\b/.test(text) && (!best || text.search(/\bNOS\b/) < best.i)) best = { i: 0, name: 'NOS' };
   if (best) return best.name;
-  const bad = /fatura|recibo|data|pagina|original|duplicado|n\.?º|contribuinte|nif|exmo|cliente|documento|^\W*$/i;
+  const bad = /fatura|recibo|data|pagina|original|duplicado|rep[uú]blica|certificado|n\.?º|contribuinte|nif|exmo|cliente|documento|^\W*$/i;
   for (const l of text.split('\n').slice(0, 8)) {
     const s = l.trim(); const letters = (s.match(/[A-Za-zÀ-ÿ]/g) || []).length;
     if (s.length >= 3 && s.length <= 40 && letters / s.length > 0.65 && !bad.test(s)) return s.replace(/\s+/g, ' ');
@@ -392,7 +392,7 @@ function vHome() {
   ${needBk ? `<div class="note">💾 ${S.set.lastBackup ? 'Já passou mais de um mês desde a última cópia de segurança.' : 'Ainda não fizeste nenhuma cópia de segurança.'} <a href="#/s" style="color:var(--acc)">Fazer agora</a></div>` : ''}
   ${review.length ? `<h2>Por confirmar</h2><div class="card">${review.map(d => docRow(d)).join('')}</div>` : ''}
   ${dues.length ? `<h2>Prazos de pagamento</h2><div class="card">${dues.slice(0, 6).map(d => docRow(d)).join('')}</div>` : ''}
-  <h2>Pastas</h2><div class="grid">${tops().map(t => { const c = countIn(t.id); return `<button class="fold" data-go="#/f/${t.id}"><span class="em">${t.emoji || '📁'}</span><b>${esc(t.name)}</b><small>${c} doc${c === 1 ? '' : 's'}</small></button>`; }).join('')}<button class="fold add" data-act="newFolder"><span class="em">＋</span><b>Nova pasta</b><small>criar uma pasta tua</small></button></div>
+  <h2>Pastas</h2><div class="grid">${tops().map(t => { const c = countIn(t.id); return `<button class="fold" data-go="#/f/${t.id}"><span class="em">${t.emoji || '📁'}</span><b>${esc(t.name)}</b><small>${t.id === 'carros' && S.cars.length ? `${S.cars.length} carro${S.cars.length === 1 ? '' : 's'} · ` : ''}${c} doc${c === 1 ? '' : 's'}</small></button>`; }).join('')}<button class="fold add" data-act="newFolder"><span class="em">＋</span><b>Nova pasta</b><small>criar uma pasta tua</small></button></div>
   <h2>Recentes</h2><div class="card">${recent.map(d => docRow(d)).join('')}</div>
   ${standaloneNote()}</div>`;
   const q = $('#q'); q.oninput = () => { S.q = q.value; clearTimeout(q._t); q._t = setTimeout(renderResults, 120); };
@@ -437,9 +437,11 @@ function renderResults() {
   hb.hidden = true;
   const terms = norm(q).split(/\s+/).filter(Boolean);
   const list = search(q);
-  r.innerHTML = list.length ? `<h2>${list.length} resultado${list.length === 1 ? '' : 's'}</h2><div class="card">${list.slice(0, 100).map(d => docRow(d, snippet(d, terms))).join('')}</div>` : `<div class="empty"><p>Nada encontrado para «${esc(q)}».</p></div>`;
+  const cars = S.cars.filter(c => { const h = norm([c.plate, np(c.plate), c.brand, c.model, c.version, c.vin].join(' ')); return terms.every(t => h.includes(t)); });
+  r.innerHTML = (cars.length ? `<h2>Carros</h2><div class="card">${cars.map(carRow).join('')}</div>` : '') + (list.length ? `<h2>${list.length} documento${list.length === 1 ? '' : 's'}</h2><div class="card">${list.slice(0, 100).map(d => docRow(d, snippet(d, terms))).join('')}</div>` : cars.length ? '' : `<div class="empty"><p>Nada encontrado para «${esc(q)}».</p></div>`);
 }
 function vFolder(id) {
+  if (id === 'carros' && folderById('carros')) return vGarage();
   const f = folderById(id); if (!f) return go('#/');
   setBar(`${f.emoji || folderEmoji(id)} ${f.name}`, true, false);
   const subs = kids(id);
@@ -462,6 +464,8 @@ async function vDoc(id) {
   const fo = folderById(d.folder);
   const sugg = (d.sugg || []).filter(x => folderById(x));
   let html = '';
+  const car = carOfDoc(d);
+  html += carPrompt(d, car);
   if (d.review) {
     html += `<div class="review"><p>Arquivei em <b>${esc(folderEmoji(d.folder) + ' ' + folderPath(d.folder))}</b>. Está certo?</p>
     <div class="chips"><button class="chip on" data-act="confirm">✓ Sim</button>${sugg.filter(x => x !== d.folder).map(x => `<button class="chip" data-act="setFolder" data-f="${x}">${esc(folderPath(x))}</button>`).join('')}<button class="chip" data-act="pickFolder">Outra…</button></div></div>`;
@@ -480,6 +484,8 @@ async function vDoc(id) {
    <div class="f"><label>Prazo</label><input type="date" data-field="due" value="${esc(d.due || '')}">${dueInfo}</div>
    ${d.due ? `<div class="f"><label>Já paguei</label><span style="flex:1"></span><input type="checkbox" data-field="paid"${d.paid ? ' checked' : ''}></div>` : ''}
    <div class="f"><label>Matrícula</label><input data-field="plate" value="${esc(d.plate || '')}" placeholder="—" autocapitalize="characters"></div>
+   ${S.cars.length ? `<div class="f"><label>Carro</label><select data-field="carId"><option value=""${!d.carId ? ' selected' : ''}>Automático${!d.carId ? ` (${car ? esc(fmtPlate(car.plate)) : 'nenhum'})` : ''}</option><option value="none"${d.carId === 'none' ? ' selected' : ''}>Nenhum</option>${S.cars.map(c => `<option value="${c.id}"${d.carId === c.id ? ' selected' : ''}>${esc(fmtPlate(c.plate) + ' ' + carName(c))}</option>`).join('')}</select></div>
+   ${car ? `<div class="f"><label>No carro é</label><select data-field="carCat">${CAR_CATS.map(([k, n]) => `<option value="${k}"${carCat(d, car) === k ? ' selected' : ''}>${n}</option>`).join('')}</select></div><button class="row chev" data-go="#/car/${car.id}"><span class="em">🚗</span><div class="mid"><div class="t">Abrir a ficha do ${esc(fmtPlate(car.plate))}</div><div class="s">${esc(carName(car))}</div></div></button>` : ''}` : ''}
    <div class="f col"><label>Notas</label><textarea data-field="notes" rows="2" placeholder="Escreve aqui o que quiseres">${esc(d.notes || '')}</textarea></div>
   </div>
   ${d.due ? `<button class="btn pri" data-act="calendar">📅 Adicionar prazo ao Calendário</button>` : ''}
@@ -496,7 +502,7 @@ function isoFromTs(ts) { const d = new Date(ts); return isoOf(d.getFullYear(), d
 function vNew() {
   const dr = S.draft;
   if (!dr || (!dr.pages.length && !dr.files.length)) return go('#/');
-  setBar(dr.docId ? 'Adicionar ao documento' : 'Novo documento', true, false);
+  setBar(dr.docId ? 'Adicionar ao documento' : dr.carId && carById(dr.carId) ? 'Documento do ' + fmtPlate(carById(dr.carId).plate) : 'Novo documento', true, false);
   const nItems = dr.files.length + (dr.pages.length ? 1 : 0);
   $('#view').innerHTML = `${dr.pages.length ? `<p class="muted">Confirma que as fotografias estão direitas (usa ↻ para rodar). As fotografias ficam como páginas do mesmo documento.</p>
   <div class="dgrid">${dr.pages.map((p, i) => `<div class="dp"><img src="${p.url}" alt=""><span class="num">${i + 1}</span><div class="tools"><span><button data-act="dMove" data-i="${i}" data-d="-1"${i === 0 ? ' hidden' : ''}>◀</button> <button data-act="dMove" data-i="${i}" data-d="1"${i === dr.pages.length - 1 ? ' hidden' : ''}>▶</button></span><span><button data-act="dRot" data-i="${i}">↻</button> <button data-act="dDel" data-i="${i}">✕</button></span></div></div>`).join('')}</div>` : ''}
@@ -560,8 +566,9 @@ function render() {
   closeSheet();
   const h = location.hash.replace(/^#\/?/, ''); const [a, b] = h.split('/');
   window.scrollTo(0, 0);
-  $('#fab').hidden = !(a === '' || a === 'f');
+  $('#fab').hidden = !(a === '' || a === 'f' || (a === 'car' && b !== 'new'));
   if (a === 'f') vFolder(b);
+  else if (a === 'car') { if (b === 'new') vCarNew(); else vCar(b); }
   else if (a === 'd') vDoc(b);
   else if (a === 'new') vNew();
   else if (a === 's') vSettings();
@@ -571,7 +578,7 @@ function render() {
 
 /* ---------------- Ações ---------------- */
 let pickFor = null; // null = novo documento; id = adicionar ao documento
-$('#fab').onclick = () => { pickFor = null; addSheet(); };
+$('#fab').onclick = () => { pickFor = null; const m = location.hash.match(/^#\/car\/(?!new)(.+)$/); S.pendingCar = m ? m[1] : null; addSheet(); };
 function addSheet() {
   sheet(`<div class="grp"><button class="it" data-act="cam">📷 Tirar fotografia</button><button class="it" data-act="gal">🖼 Escolher da galeria</button><button class="it" data-act="fil">📄 Escolher ficheiro (PDF, Word…)</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`);
 }
@@ -579,7 +586,7 @@ const isImg = f => /^image\/(jpeg|png|webp|gif|heic|heif)/.test(f.type) || /\.(j
 async function onPicked(files) {
   files = [...files]; if (!files.length) return;
   closeSheet();
-  if (!S.draft || (S.draft.docId || null) !== pickFor) { clearDraft(); S.draft = { docId: pickFor, pages: [], files: [] }; }
+  if (!S.draft || (S.draft.docId || null) !== pickFor || (S.draft.carId || null) !== (S.pendingCar || null)) { clearDraft(); S.draft = { docId: pickFor, pages: [], files: [], carId: S.pendingCar || null }; }
   busy(true, 'A preparar…', null);
   for (const f of files) {
     if (isImg(f)) { try { const r = await prepImage(f); S.draft.pages.push({ blob: r.blob, url: URL.createObjectURL(r.blob) }); continue; } catch (e) { /* imagem que não abre: fica como ficheiro */ } }
@@ -657,7 +664,7 @@ async function extractFile(f, onp) {
 }
 // junta fotografias e ficheiros: devolve páginas, texto e ficheiros originais
 async function collect(g) {
-  const pageBlobs = [...g.photos], texts = g.photos.map(() => ''), ocrIdx = g.photos.map((_, i) => i), extra = [];
+  const pageBlobs = [...g.photos], texts = g.photos.map((_, i) => (g.preTexts && g.preTexts[i]) || ''), ocrIdx = g.preTexts ? [] : g.photos.map((_, i) => i), extra = [];
   for (const f of g.files) {
     const r = await extractFile(f, (i, n) => busy(true, `A abrir «${f.name}» (página ${i} de ${n})…`, i / n));
     f.kind = r.kind;
@@ -689,6 +696,8 @@ async function buildDoc(g) {
   const fname = (g.files[0]?.name || '').replace(/\.[^.]+$/, '');
   const title = fname && !a.type && !a.entity ? fname : a.title;
   const d = { id, created: Date.now(), pages, files, origPdf: c.pdfOnly ? files[0].id : null, thumb: c.pageBlobs.length ? await makeThumb(c.pageBlobs[0]) : iconThumb(g.files[0]?.name), text: c.text, title, folder: a.folder, sugg: a.sugg, date: a.date || todayISO(), due: a.due || '', paid: false, amount: a.amount, nif: a.nif, entity: a.entity, plate: a.plate || '', type: a.type, notes: '', review: true };
+  if (g.carId && carById(g.carId)) { d.carId = g.carId; if (!d.plate) d.plate = fmtPlate(carById(g.carId).plate); }
+  if (g.title) d.title = g.title; if (g.folder && folderById(g.folder)) { d.folder = g.folder; d.review = false; }
   S.docs.push(d); await saveDoc(d);
   return d;
 }
@@ -708,7 +717,7 @@ async function processDraft(el) {
       history.replaceState(null, '', '#/d/' + d.id); render(); toast('Adicionado ao documento');
       return;
     }
-    const groups = el && el.dataset.sep ? [...(photos.length ? [{ photos, files: [] }] : []), ...dr.files.map(f => ({ photos: [], files: [f] }))] : [{ photos, files: dr.files }];
+    const groups = (el && el.dataset.sep ? [...(photos.length ? [{ photos, files: [] }] : []), ...dr.files.map(f => ({ photos: [], files: [f] }))] : [{ photos, files: dr.files }]).map(g => ({ ...g, carId: dr.carId }));
     const made = [];
     for (let k = 0; k < groups.length; k++) {
       if (groups.length > 1) busy(true, `Documento ${k + 1} de ${groups.length}…`, k / groups.length);
@@ -937,6 +946,8 @@ document.addEventListener('change', async e => {
     const d = curDoc(); if (!d) return; const k = el.dataset.field; let v = el.type === 'checkbox' ? el.checked : el.value;
     if (k === 'amount') { v = v.trim() ? parseFloat(v.replace(/\s|€/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')) : null; if (v != null && isNaN(v)) v = null; }
     if (k === 'plate') v = v.toUpperCase();
+    if (k === 'carId') { if (v) d.carId = v; else delete d.carId; await saveDoc(d); return vDoc(d.id); }
+    if (k === 'carCat') { d.carCat = v; await saveDoc(d); return vDoc(d.id); }
     if (k === 'folder' && v === '__new') { el.value = d.folder; return newFolderSheet(folderById(d.folder)?.parent || d.folder, d.id); }
     if (k === 'folder') { await setDocFolder(d, v); toast('Movido para ' + folderPath(v)); return vDoc(d.id); }
     d[k] = v; await saveDoc(d);
@@ -948,11 +959,337 @@ document.addEventListener('change', async e => {
     else if (k === 'name') f.name = el.value.trim() || f.name;
     else f[k] = el.value;
     await saveFolders(); S.docs.forEach(indexDoc); toast('Guardado');
+  } else if (el.dataset.car || el.dataset.exp || el.dataset.cd) {
+    return carChange(el);
   } else if (el.dataset.lock) {
     L.cfg[el.dataset.lock] = el.value; await saveLock(); toast('Guardado');
   } else if (el.dataset.set) {
     S.set[el.dataset.set] = el.value; await dbPut('kv', S.set, 'set'); toast('Guardado');
   }
+});
+
+
+/* ---------------- Garagem: carros ---------------- */
+const np = p => String(p || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const fmtPlate = p => { const c = np(p); return c.length === 6 ? `${c.slice(0, 2)}-${c.slice(2, 4)}-${c.slice(4)}` : String(p || '').toUpperCase(); };
+const carById = id => S.cars.find(c => c.id === id);
+const carName = c => [c.brand, c.model].filter(Boolean).join(' ') || 'Carro';
+const sum = a => a.reduce((x, y) => x + (+y || 0), 0);
+async function saveCars() { await dbPut('kv', S.cars, 'cars'); }
+async function saveCar(c) { c.updated = Date.now(); await saveCars(); }
+const STATUS = { stock: ['Em stock', 'b-ac'], venda: ['À venda', 'b-or'], vendido: ['Vendido', 'b-gr'], pessoal: ['Pessoal', 'b-gy'] };
+const CAR_CATS = [['compra', 'Compra e transferência', '🤝'], ['dua', 'Documento Único', '🪪'], ['iuc', 'IUC', '💶'], ['insp', 'Inspeção', '🔍'], ['seguro', 'Seguro', '🛡️'], ['rep', 'Reparações e peças', '🔧'], ['multas', 'Multas e portagens', '🚨'], ['venda', 'Venda', '💰'], ['outros', 'Outros', '📄']];
+const EXP_CATS = ['Peças', 'Mão de obra (oficina)', 'Pneus', 'Inspeção', 'IUC', 'Registo e documentos', 'Seguro', 'Limpeza e estética', 'Transporte/reboque', 'Anúncios', 'Combustível', 'Multas e portagens', 'Outros'];
+const CAT2EXP = { rep: 'Peças', insp: 'Inspeção', iuc: 'IUC', seguro: 'Seguro', multas: 'Multas e portagens', dua: 'Registo e documentos', compra: 'Registo e documentos', outros: 'Outros' };
+function addDays(iso, n) { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return isoOf(d.getFullYear(), d.getMonth() + 1, d.getDate()); }
+function daysBetween(a, b) { return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5); }
+function carOfDoc(d) {
+  if (d.carId === 'none') return null;
+  if (d.carId) return carById(d.carId) || null;
+  const p = np(d.plate);
+  if (p.length === 6) { const c = S.cars.find(c => np(c.plate) === p); if (c) return c; }
+  for (const c of S.cars) { const cp = np(c.plate).toLowerCase(); if (cp.length === 6 && d._sp && d._sp.includes(cp)) return c; }
+  return null;
+}
+const docsOfCar = c => S.docs.filter(d => carOfDoc(d) === c);
+function carCat(d, c) {
+  if (d.carCat) return d.carCat;
+  if (d.folder === 'car-cv') {
+    if (c.sellDate && d.date && d.date >= addDays(c.sellDate, -20)) return 'venda';
+    if (c.buyDate && d.date && d.date > addDays(c.buyDate, 30) && c.status === 'vendido') return 'venda';
+    return 'compra';
+  }
+  return { 'car-doc': 'dua', 'car-iuc': 'iuc', 'car-insp': 'insp', 'car-seg': 'seguro', 'fin-seguros': 'seguro', 'car-multas': 'multas', 'car-port': 'multas', 'car-rep': 'rep', 'ativ-forn': 'rep', 'ativ-cli': 'rep' }[d.folder] || 'outros';
+}
+function carCalc(c) {
+  const buy = c.buyPrice != null && c.buyPrice !== '' ? +c.buyPrice : 0;
+  const exp = sum((c.expenses || []).map(e => e.amount));
+  const cost = buy + exp;
+  const sold = c.sellPrice != null && c.sellPrice !== '';
+  const profit = sold ? +c.sellPrice - cost : null;
+  const end = c.sellDate || todayISO();
+  const days = c.buyDate ? Math.max(0, daysBetween(c.buyDate, end)) : null;
+  return { buy, exp, cost, sold, profit, margin: sold && cost ? profit / cost : null, days, perDay: sold && days ? profit / days : null };
+}
+const eur0 = n => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('pt-PT', { style: 'currency', currency: 'EUR', maximumFractionDigits: Math.abs(n) >= 1000 ? 0 : 2 });
+function carThumb(c) { return c.thumb || 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="110"><rect width="160" height="110" fill="#dde3ec"/><text x="80" y="70" font-size="48" text-anchor="middle">🚗</text></svg>'); }
+function statusBadge(c) { const [t, cl] = STATUS[c.status] || STATUS.stock; return `<span class="badge ${cl}">${t}</span>`; }
+function carRow(c) {
+  const k = carCalc(c);
+  const line = c.status === 'pessoal' ? `Gastos: ${eur0(k.exp)}` : k.sold ? `Lucro ${eur0(k.profit)}` : `Investido ${eur0(k.cost)}${k.days != null ? ` · ${k.days} dias` : ''}`;
+  return `<button class="row carrow" data-go="#/car/${c.id}"><img class="cth" src="${carThumb(c)}" alt=""><div class="mid"><div class="pl">${esc(fmtPlate(c.plate) || 'sem matrícula')}</div><div class="t">${esc(carName(c))}${c.year ? ` <span class="muted">${esc(String(c.year).slice(0, 4))}</span>` : ''}</div><div class="s">${statusBadge(c)} <span class="${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}">${line}</span></div></div></button>`;
+}
+function vGarage() {
+  const f = folderById('carros'); setBar(`${f.emoji || '🚗'} ${f.name}`, true, false);
+  const years = [...new Set(S.cars.filter(c => c.status === 'vendido' && c.sellDate).map(c => +c.sellDate.slice(0, 4)))].sort((a, b) => b - a);
+  const thisY = new Date().getFullYear(); if (!years.includes(thisY)) years.unshift(thisY);
+  const yr = S.carYear || thisY;
+  const biz = S.cars.filter(c => c.status !== 'pessoal');
+  const sold = biz.filter(c => c.status === 'vendido' && (c.sellDate || '').startsWith(String(yr)));
+  const stock = biz.filter(c => c.status !== 'vendido');
+  const ks = sold.map(carCalc);
+  const profit = sum(ks.map(k => k.profit)), dd = ks.map(k => k.days).filter(x => x != null);
+  const flt = S.carFilter;
+  const list = S.cars.filter(c => flt === 'todos' || (flt === 'stock' ? ['stock', 'venda'].includes(c.status) : c.status === flt))
+    .sort((a, b) => (a.status === 'vendido') - (b.status === 'vendido') || (b.sellDate || b.buyDate || '').localeCompare(a.sellDate || a.buyDate || '') || b.created - a.created);
+  let html = '';
+  if (biz.length) html += `<div class="stats"><div class="st"><small>Lucro ${yr}</small><b class="${profit >= 0 ? 'pos' : 'neg'}">${eur0(profit)}</b></div><div class="st"><small>Vendidos ${yr}</small><b>${sold.length}</b></div><div class="st"><small>Em stock</small><b>${stock.length}</b><small>${eur0(sum(stock.map(c => carCalc(c).cost)))} investidos</small></div><div class="st"><small>Média até vender</small><b>${dd.length ? Math.round(sum(dd) / dd.length) + ' dias' : '—'}</b><small>${sold.length ? 'lucro médio ' + eur0(profit / sold.length) : ''}</small></div></div>
+  ${years.length > 1 ? `<div class="chips" style="margin-top:8px">${years.map(y => `<button class="chip${y === yr ? ' on' : ''}" data-act="carYear" data-y="${y}">${y}</button>`).join('')}</div>` : ''}`;
+  html += `<div class="chips" style="margin:14px 0 8px">${[['todos', 'Todos'], ['stock', 'Em stock'], ['vendido', 'Vendidos'], ['pessoal', 'Pessoais']].map(([k, t]) => `<button class="chip${flt === k ? ' on' : ''}" data-act="carFlt" data-f="${k}">${t}</button>`).join('')}</div>`;
+  html += list.length ? `<div class="card">${list.map(carRow).join('')}</div>` : `<div class="empty"><div class="big">🚗</div><p>${S.cars.length ? 'Nenhum carro neste filtro.' : 'Ainda não tens carros. Cria o primeiro: o mais rápido é fotografar o Documento Único.'}</p></div>`;
+  html += `<button class="btn pri" data-go="#/car/new">＋ Novo carro</button>`;
+  const loose = sortDocs(S.docs.filter(d => (d.folder === 'carros' || (folderById(d.folder)?.parent === 'carros')) && !carOfDoc(d)));
+  if (loose.length) html += `<h2>Documentos sem carro associado</h2><div class="card">${loose.slice(0, 30).map(d => docRow(d)).join('')}</div>`;
+  const subs = kids('carros');
+  html += `<h2>Todos os documentos por tipo</h2><div class="card">${subs.map(k => `<button class="row chev" data-go="#/f/${k.id}"><span class="em">${k.emoji || '📂'}</span><div class="mid"><div class="t">${esc(k.name)}</div></div><span class="n">${S.docs.filter(d => d.folder === k.id).length}</span></button>`).join('')}</div>
+  <div class="btns"><button class="btn" data-act="garCsv">📊 Exportar tabela (Excel)</button><button class="btn" data-act="newFolder" data-p="carros">＋ Subpasta</button></div>`;
+  $('#view').innerHTML = html;
+}
+
+// ---- criar carro
+function carDraftFields() { return S.carDraft || (S.carDraft = { f: { status: 'stock', buyDate: todayISO() } }); }
+function vCarNew() {
+  setBar('Novo carro', true, false);
+  const dr = carDraftFields(), f = dr.f;
+  const inp = (k, lbl, extra = '') => `<div class="f"><label>${lbl}</label><input data-cd="${k}" value="${esc(f[k] ?? '')}" ${extra}></div>`;
+  $('#view').innerHTML = `${dr.thumb ? `<img class="carhero" src="${dr.thumb}" alt="">` : ''}
+  <p class="muted">O mais rápido é fotografar o <b>Documento Único</b>: leio a matrícula, a marca, o modelo e o resto. A fotografia do carro serve de capa (tento ler a matrícula, mas numa foto de rua nem sempre consigo).</p>
+  <div class="btns"><button class="btn${dr.dua ? '' : ' pri'}" data-act="carDua">🪪 ${dr.dua ? 'DUA lido ✓' : 'Fotografar DUA'}</button><button class="btn" data-act="carPic">🚗 ${dr.photo ? 'Mudar foto' : 'Foto do carro'}</button></div>
+  <h2>Dados</h2><div class="card form">
+   ${inp('plate', 'Matrícula', 'autocapitalize="characters" placeholder="AA-00-BB"')}
+   ${inp('brand', 'Marca', 'placeholder="Toyota"')}
+   ${inp('model', 'Modelo', 'placeholder="Corolla"')}
+   ${inp('year', '1.ª matrícula', 'type="date"')}
+   <div class="f"><label>Estado</label><select data-cd="status">${Object.entries(STATUS).map(([k, [t]]) => `<option value="${k}"${f.status === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+   ${f.status !== 'pessoal' ? inp('buyDate', 'Data compra', 'type="date"') + inp('buyPrice', 'Valor compra €', 'inputmode="decimal" placeholder="0,00"') + inp('buyFrom', 'Comprado a', 'placeholder="—"') : ''}
+   ${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}
+  </div>
+  <button class="btn pri" data-act="carSave">Criar carro</button>
+  <button class="btn red" data-act="carCancel">Cancelar</button>`;
+}
+const BRANDS = [['alfa romeo', 'Alfa Romeo'], ['mercedes-benz', 'Mercedes-Benz'], ['mercedes', 'Mercedes-Benz'], ['land rover', 'Land Rover'], ['volkswagen', 'Volkswagen'], ['vw', 'Volkswagen'], ['toyota', 'Toyota'], ['renault', 'Renault'], ['peugeot', 'Peugeot'], ['citroen', 'Citroën'], ['seat', 'SEAT'], ['cupra', 'Cupra'], ['skoda', 'Škoda'], ['audi', 'Audi'], ['bmw', 'BMW'], ['opel', 'Opel'], ['ford', 'Ford'], ['fiat', 'Fiat'], ['nissan', 'Nissan'], ['honda', 'Honda'], ['mazda', 'Mazda'], ['mitsubishi', 'Mitsubishi'], ['hyundai', 'Hyundai'], ['kia', 'Kia'], ['dacia', 'Dacia'], ['volvo', 'Volvo'], ['mini', 'MINI'], ['smart', 'Smart'], ['suzuki', 'Suzuki'], ['lancia', 'Lancia'], ['jeep', 'Jeep'], ['porsche', 'Porsche'], ['tesla', 'Tesla'], ['lexus', 'Lexus'], ['chevrolet', 'Chevrolet'], ['subaru', 'Subaru'], ['jaguar', 'Jaguar'], ['mg', 'MG'], ['byd', 'BYD'], ['ds', 'DS'], ['saab', 'Saab'], ['rover', 'Rover'], ['daewoo', 'Daewoo'], ['chrysler', 'Chrysler'], ['dodge', 'Dodge'], ['iveco', 'Iveco'], ['isuzu', 'Isuzu'], ['ssangyong', 'SsangYong']];
+function parseDua(text) {
+  const up = text.toUpperCase(), n = norm(text), out = {};
+  out.plate = findPlate(up) || '';
+  const lines = up.split('\n');
+  const code = (rx) => { for (const l of lines) { const m = rx.exec(l); if (m && m[1].trim().length > 1) return m[1].trim(); } return ''; };
+  let brand = ''; for (const [k, v] of BRANDS) { const r = rxFor(k); const m = r.exec(n); if (m) { brand = v; break; } }
+  out.brand = brand || titleCase(code(/\bD\.?\s?1\.?\s*[:\-]?\s*([A-Z][A-Z\- ]{1,20})/));
+  let model = code(/\bD\.?\s?3\.?\s*[:\-]?\s*([A-Z0-9][A-Z0-9 \-.\/]{1,28})/);
+  if (!model && brand) { const i = n.indexOf(norm(brand)); if (i >= 0) { const rest = text.slice(i + brand.length, i + brand.length + 30).split('\n')[0].trim(); if (/^[A-Za-z0-9]/.test(rest)) model = rest.split(/\s{2,}/)[0]; } }
+  out.model = titleCase(model.replace(/\s+/g, ' ').trim());
+  const vins = up.match(/\b[A-HJ-NPR-Z0-9]{17}\b/g) || up.replace(/[ \t]/g, '').match(/[A-HJ-NPR-Z0-9]{17}/g); if (vins) out.vin = vins.find(v => /\d/.test(v) && /[A-Z]/.test(v)) || '';
+  const ds = findDates(n).map(x => x.iso).sort(); if (ds.length) out.year = ds[0];
+  out.fuel = /gasoleo|diesel/.test(n) ? 'Gasóleo' : /eletric|electric/.test(n) ? 'Elétrico' : /hibrid/.test(n) ? 'Híbrido' : /\bgpl\b/.test(n) ? 'GPL' : /gasolina/.test(n) ? 'Gasolina' : '';
+  const cc = code(/\bP\.?\s?1\.?\s*[:\-]?\s*(\d{3,4})\b/) || (up.match(/\b(\d{3,4})\s?(?:CM3|CM³|CC)\b/) || [])[1]; if (cc) out.cc = cc;
+  return out;
+}
+function titleCase(s) { return String(s || '').toLowerCase().replace(/(^|[\s\-\/])([a-zà-ÿ])/g, (m, a, b) => a + b.toUpperCase()).replace(/\b(Gti|Tdi|Hdi|Dci|Tsi|Tfsi|Cdi|Crdi|Vti|Gt|Rs|St|Sw|Xdi|D4d|D-4d|Vvt-I)\b/g, x => x.toUpperCase()); }
+async function grayCrop(blob, x0, y0, x1, y1, maxW = 2000) {
+  const im = await loadImg(blob); const W = im.naturalWidth, H = im.naturalHeight;
+  const sx = x0 * W, sy = y0 * H, sw = (x1 - x0) * W, sh = (y1 - y0) * H; const k = Math.min(3, maxW / sw);
+  const c = document.createElement('canvas'); c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+  const x = c.getContext('2d'); x.filter = 'grayscale(1) contrast(1.4)'; x.drawImage(im, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const out = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9)); c.width = c.height = 0; return out;
+}
+function plateIn(t) {
+  t = (t || '').toUpperCase().replace(/[|]/g, 'I');
+  const rx = /\b([A-Z0-9]{2})\s?[-–·.:]?\s?([A-Z0-9]{2})\s?[-–·.:]?\s?([A-Z0-9]{2})\b/g; let m;
+  while ((m = rx.exec(t))) {
+    const g = [m[1], m[2], m[3]].map(x => /\d/.test(x) && /[A-Z]/.test(x) ? x.replace(/O/g, '0').replace(/[IL]/g, '1') : x);
+    if (g.every(x => /^\d{2}$|^[A-Z]{2}$/.test(x)) && g.some(x => /\d/.test(x)) && g.some(x => /[A-Z]/.test(x))) return g.join('-');
+  }
+  return '';
+}
+async function readPlate(blob) {
+  const w = await getWorker();
+  const zones = [[0, 0, 1, 1], [0, 0.4, 1, 1], [0.15, 0.45, 0.85, 0.95], [0, 0.2, 1, 0.8]];
+  try {
+    for (let i = 0; i < zones.length; i++) {
+      busy(true, 'A procurar a matrícula na fotografia…', i / zones.length);
+      const g = await grayCrop(blob, ...zones[i]);
+      const p = plateIn((await w.recognize(g)).data.text); if (p) return p;
+    }
+    return '';
+  } catch (e) { console.warn(e); return ''; }
+  finally { busy(false); }
+}
+let carPickMode = null;
+function pickCarImage(mode) { carPickMode = mode; away(); $('#carIn').click(); }
+$('#carIn').onchange = async e => {
+  const file = e.target.files[0]; e.target.value = ''; if (!file) return;
+  const mode = carPickMode; carPickMode = null;
+  try {
+    busy(true, 'A preparar a fotografia…', null);
+    if (mode === 'dua' || mode === 'dua-car') {
+      const r = await prepImage(file); const [t] = await ocrBlobs([r.blob]); busy(false);
+      const info = parseDua(t || '');
+      if (mode === 'dua') {
+        const dr = carDraftFields(); dr.dua = { blob: r.blob, text: t };
+        for (const k of ['plate', 'brand', 'model', 'year', 'fuel', 'cc', 'vin']) if (info[k] && !dr.f[k]) dr.f[k] = info[k];
+        toast(info.plate ? `Li ${info.plate}${info.brand ? ' · ' + info.brand : ''}${info.model ? ' ' + info.model : ''} — confirma os dados` : 'Não consegui ler a matrícula — escreve-a tu');
+        vCarNew();
+      } else {
+        const c = curCar(); let n = 0;
+        for (const k of ['plate', 'brand', 'model', 'year', 'fuel', 'cc', 'vin']) if (info[k] && !c[k]) { c[k] = info[k]; n++; }
+        await saveCar(c);
+        await buildDoc({ photos: [r.blob], files: [], preTexts: [t], carId: c.id, title: 'Documento Único ' + fmtPlate(c.plate), folder: 'car-doc' });
+        busy(false); toast(`DUA arquivado no carro${n ? ` · ${n} campo${n === 1 ? '' : 's'} preenchido${n === 1 ? '' : 's'}` : ''}`); vCar(c.id);
+      }
+    } else {
+      const r = await prepImage(file, 0, 1600, 0.8); const thumb = await makeThumb(r.blob);
+      if (mode === 'pic') {
+        const dr = carDraftFields(); dr.photo = r.blob; dr.thumb = thumb;
+        if (!dr.f.plate) { const p = await readPlate(r.blob); if (p) { dr.f.plate = p; toast(`Parece-me ${p} — confirma`); } else toast('Não consegui ler a matrícula na fotografia — escreve-a ou fotografa o DUA'); }
+        busy(false); vCarNew();
+      } else {
+        const c = curCar(); if (c.photo) await dbDel('pages', c.photo);
+        c.photo = 'cp-' + uid(); await dbPut('pages', { id: c.photo, docId: 'car:' + c.id, blob: r.blob }); c.thumb = thumb; await saveCar(c); dropURL(c.photo);
+        busy(false); vCar(c.id);
+      }
+    }
+  } catch (err) { busy(false); alert('Erro: ' + (err.message || err)); }
+};
+async function createCar() {
+  const dr = carDraftFields(), f = dr.f;
+  if (!np(f.plate) && !f.brand && !f.model) return toast('Escreve pelo menos a matrícula ou a marca e o modelo');
+  if (np(f.plate) && S.cars.some(c => np(c.plate) === np(f.plate))) { if (!confirm(`Já existe um carro com a matrícula ${fmtPlate(f.plate)}. Criar outro na mesma? (Útil se o voltaste a comprar.)`)) return; }
+  const c = { id: uid(), created: Date.now(), expenses: [], ...f, plate: fmtPlate(f.plate) };
+  if (c.buyPrice != null && c.buyPrice !== '') c.buyPrice = parseNum(c.buyPrice);
+  if (dr.photo) { c.photo = 'cp-' + uid(); await dbPut('pages', { id: c.photo, docId: 'car:' + c.id, blob: dr.photo }); c.thumb = dr.thumb; }
+  S.cars.push(c); await saveCar(c);
+  if (dr.dua) { busy(true, 'A arquivar o DUA…', null); await buildDoc({ photos: [dr.dua.blob], files: [], preTexts: [dr.dua.text], carId: c.id, title: 'Documento Único ' + fmtPlate(c.plate), folder: 'car-doc' }); busy(false); }
+  S.carDraft = null; history.replaceState(null, '', '#/car/' + c.id); render(); toast('Carro criado');
+}
+function parseNum(v) { if (typeof v === 'number') return v; v = String(v || '').replace(/\s|€/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.'); const n = parseFloat(v); return isNaN(n) ? null : n; }
+const curCar = () => { const m = location.hash.match(/^#\/car\/(.+)$/); return m && carById(m[1]); };
+
+// ---- ficha do carro
+async function vCar(id) {
+  const c = carById(id); if (!c) return go('#/f/carros');
+  setBar(fmtPlate(c.plate) || carName(c), true, false);
+  const k = carCalc(c), tab = S.carTab, docs = docsOfCar(c), pess = c.status === 'pessoal';
+  let html = `<div class="carhead"><img class="cimg" src="${c.photo ? '' : carThumb(c)}" data-cphoto="${c.photo || ''}" data-act="carPhotoAct" alt="">
+   <div class="cinfo"><div class="plate">${esc(fmtPlate(c.plate) || '—')}</div><div class="t">${esc(carName(c))}</div><div class="s">${esc([c.year ? String(c.year).slice(0, 4) : '', c.fuel, c.cc ? c.cc + ' cm³' : ''].filter(Boolean).join(' · '))}</div>
+   <select data-car="status" class="stsel">${Object.entries(STATUS).map(([s, [t]]) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>`;
+  if (!pess) html += `<div class="profit ${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}"><div><small>${k.sold ? 'Lucro' : 'Investido até agora'}</small><b>${k.sold ? eur0(k.profit) : eur0(k.cost)}</b></div><div><small>${k.sold ? 'Margem' : 'Dias em stock'}</small><b>${k.sold ? (k.margin != null ? Math.round(k.margin * 100) + '%' : '—') : (k.days ?? '—')}</b></div><div><small>${k.sold ? 'Dias até vender' : 'Preço pedido'}</small><b>${k.sold ? (k.days ?? '—') : (c.askPrice ? eur0(c.askPrice) : '—')}</b></div></div>`;
+  html += `<div class="seg">${[['contas', pess ? 'Gastos' : 'Contas'], ['docs', `Documentos (${docs.length})`], ['dados', 'Dados']].map(([t, n]) => `<button class="${tab === t ? 'on' : ''}" data-act="carTab" data-t="${t}">${n}</button>`).join('')}</div>`;
+  const inp = (key, lbl, extra = '', val) => `<div class="f"><label>${lbl}</label><input data-car="${key}" value="${esc(val ?? c[key] ?? '')}" ${extra}></div>`;
+  const money = key => (c[key] != null && c[key] !== '' ? String(Number(c[key]).toFixed(2)).replace('.', ',') : '');
+  if (tab === 'contas') {
+    if (!pess) html += `<h2>Compra</h2><div class="card form">${inp('buyDate', 'Data', 'type="date"')}${inp('buyPrice', 'Valor €', 'inputmode="decimal" placeholder="0,00"', money('buyPrice'))}${inp('buyFrom', 'Comprado a', 'placeholder="—"')}${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}</div>`;
+    html += `<h2>Despesas</h2><div class="card">${(c.expenses || []).map((e, i) => `<div class="exp">
+      <input class="ed" data-exp="desc" data-i="${i}" value="${esc(e.desc || '')}" placeholder="Descrição">
+      <input class="ea" data-exp="amount" data-i="${i}" inputmode="decimal" value="${e.amount != null ? String(Number(e.amount).toFixed(2)).replace('.', ',') : ''}" placeholder="0,00 €">
+      <input class="edt" type="date" data-exp="date" data-i="${i}" value="${esc(e.date || '')}">
+      <select class="ec" data-exp="cat" data-i="${i}">${EXP_CATS.map(x => `<option${e.cat === x ? ' selected' : ''}>${x}</option>`).join('')}</select>
+      <span class="eb">${e.docId && docById(e.docId) ? `<button data-go="#/d/${e.docId}" aria-label="Ver fatura">📎</button>` : ''}<button data-act="expDel" data-i="${i}" aria-label="Apagar">✕</button></span></div>`).join('') || '<div class="row muted">Ainda sem despesas</div>'}
+      <div class="row tot"><div class="mid">Total de despesas</div><b>${eur0(k.exp)}</b></div></div>
+      <button class="btn" data-act="expAdd">＋ Adicionar despesa</button>`;
+    if (!pess) {
+      html += `<h2>Venda</h2><div class="card form">${inp('askPrice', 'Preço pedido €', 'inputmode="decimal" placeholder="—"', money('askPrice'))}${inp('minPrice', 'Mínimo aceito €', 'inputmode="decimal" placeholder="—"', money('minPrice'))}${inp('sellDate', 'Data venda', 'type="date"')}${inp('sellPrice', 'Valor venda €', 'inputmode="decimal" placeholder="—"', money('sellPrice'))}${inp('sellTo', 'Vendido a', 'placeholder="—"')}${inp('km_out', 'Km venda', 'inputmode="numeric" placeholder="—"')}</div>`;
+      const byCat = {}; for (const e of c.expenses || []) byCat[e.cat || 'Outros'] = (byCat[e.cat || 'Outros'] || 0) + (+e.amount || 0);
+      html += `<h2>Resumo</h2><div class="card sum">
+       <div class="r"><span>Compra</span><b>${eur0(k.buy)}</b></div>
+       <div class="r"><span>Despesas</span><b>${eur0(k.exp)}</b></div>
+       ${Object.entries(byCat).map(([n, v]) => `<div class="r sub"><span>${esc(n)}</span><span>${eur0(v)}</span></div>`).join('')}
+       <div class="r big"><span>Custo total</span><b>${eur0(k.cost)}</b></div>
+       ${k.sold ? `<div class="r"><span>Venda</span><b>${eur0(+c.sellPrice)}</b></div>
+       <div class="r big ${k.profit >= 0 ? 'pos' : 'neg'}"><span>Lucro</span><b>${eur0(k.profit)}</b></div>
+       <div class="r"><span>Margem sobre o custo</span><b>${k.margin != null ? (k.margin * 100).toFixed(1).replace('.', ',') + '%' : '—'}</b></div>
+       ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>${k.perDay != null ? `<div class="r"><span>Lucro por dia</span><b>${eur0(k.perDay)}</b></div>` : ''}` : ''}`
+        : `<div class="r"><span>Vender acima de</span><b>${eur0(k.cost)}</b></div><div class="r sub"><span>para não perder dinheiro</span><span></span></div>
+       ${c.askPrice ? `<div class="r"><span>Lucro ao preço pedido</span><b class="${c.askPrice - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(c.askPrice - k.cost)}</b></div>` : ''}
+       ${c.minPrice ? `<div class="r"><span>Lucro ao preço mínimo</span><b class="${c.minPrice - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(c.minPrice - k.cost)}</b></div>` : ''}
+       ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>` : ''}`}
+      </div>`;
+    }
+    html += `<button class="btn" data-act="carCsv">📊 Exportar contas (Excel)</button>`;
+  } else if (tab === 'docs') {
+    const groups = {}; for (const d of docs) (groups[carCat(d, c)] ||= []).push(d);
+    const missing = [];
+    if (!groups.dua) missing.push('Documento Único');
+    if (!pess && !groups.compra) missing.push('documento de compra/transferência');
+    if (c.status === 'vendido' && !groups.venda) missing.push('documento de venda');
+    if (missing.length) html += `<div class="note">⚠️ Falta: ${missing.join(', ')}.</div>`;
+    for (const [key, name, em] of CAR_CATS) { const g = groups[key]; if (!g) continue; html += `<h2>${em} ${name}</h2><div class="card">${sortDocs(g).map(d => docRow(d)).join('')}</div>`; }
+    if (!docs.length) html += `<div class="empty"><p>Ainda não há documentos deste carro.<br>Todos os documentos que arquivares com a matrícula ${esc(fmtPlate(c.plate))} aparecem aqui sozinhos.</p></div>`;
+    html += `<button class="btn pri" data-act="carAddDoc">＋ Adicionar documento a este carro</button>`;
+  } else {
+    html += `<div class="card form">${inp('plate', 'Matrícula', 'autocapitalize="characters"')}${inp('brand', 'Marca')}${inp('model', 'Modelo')}${inp('version', 'Versão', 'placeholder="—"')}${inp('year', '1.ª matrícula', 'type="date"')}
+     <div class="f"><label>Combustível</label><select data-car="fuel"><option value="">—</option>${['Gasolina', 'Gasóleo', 'Híbrido', 'Elétrico', 'GPL'].map(x => `<option${c.fuel === x ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
+     ${inp('cc', 'Cilindrada cm³', 'inputmode="numeric" placeholder="—"')}${inp('vin', 'VIN / quadro', 'autocapitalize="characters" placeholder="—"')}${inp('color', 'Cor', 'placeholder="—"')}
+     <div class="f col"><label>Notas</label><textarea data-car="notes" rows="3" placeholder="Estado, defeitos, o que falta fazer…">${esc(c.notes || '')}</textarea></div></div>
+     <div class="btns"><button class="btn" data-act="carPhotoNew">📷 Mudar fotografia</button><button class="btn" data-act="carDuaRead">🪪 Ler o DUA</button></div>
+     <button class="btn red" data-act="carDel">Apagar carro</button><p class="muted">Apagar o carro não apaga os documentos dele.</p>`;
+  }
+  const v = $('#view'); v.innerHTML = html;
+  const im = v.querySelector('img[data-cphoto]'); if (im && im.dataset.cphoto) pageURL(im.dataset.cphoto).then(u => im.src = u || carThumb(c));
+}
+async function carChange(el) {
+  if (el.dataset.cd) { const dr = carDraftFields(); dr.f[el.dataset.cd] = el.value; if (el.dataset.cd === 'status') vCarNew(); return; }
+  const c = curCar(); if (!c) return;
+  if (el.dataset.car) {
+    const key = el.dataset.car; let v = el.value;
+    if (['buyPrice', 'sellPrice', 'askPrice', 'minPrice'].includes(key)) v = v.trim() ? parseNum(v) : null;
+    if (key === 'plate') v = fmtPlate(v);
+    c[key] = v;
+    if (key === 'sellPrice' && v != null && c.status !== 'vendido') { c.status = 'vendido'; if (!c.sellDate) c.sellDate = todayISO(); toast('Marcado como vendido'); }
+    if (key === 'status' && v === 'vendido' && !c.sellDate) c.sellDate = todayISO();
+    await saveCar(c); S.docs.forEach(indexDoc);
+    if (['notes', 'buyFrom', 'sellTo', 'color', 'vin', 'version'].includes(key)) toast('Guardado'); else vCar(c.id);
+  } else if (el.dataset.exp) {
+    const e = c.expenses[+el.dataset.i]; if (!e) return; const key = el.dataset.exp;
+    e[key] = key === 'amount' ? parseNum(el.value) : el.value;
+    await saveCar(c); if (key === 'amount') vCar(c.id);
+  }
+}
+function carPrompt(d, car) {
+  if (!car || d.amount == null || d.carAsked) return '';
+  const cat = carCat(d, car), p = esc(fmtPlate(car.plate)), a = eur0(d.amount);
+  if (cat === 'compra') return car.status !== 'pessoal' && (car.buyPrice == null || car.buyPrice === '') ? `<div class="review"><p>🚗 Usar <b>${a}</b> como <b>valor de compra</b> do ${p}?</p><div class="chips"><button class="chip on" data-act="carUse" data-k="buy">Sim</button><button class="chip" data-act="carNo">Não</button></div></div>` : '';
+  if (cat === 'venda') return car.status !== 'pessoal' && (car.sellPrice == null || car.sellPrice === '') ? `<div class="review"><p>🚗 Usar <b>${a}</b> como <b>valor de venda</b> do ${p}?</p><div class="chips"><button class="chip on" data-act="carUse" data-k="sell">Sim</button><button class="chip" data-act="carNo">Não</button></div></div>` : '';
+  if ((car.expenses || []).some(e => e.docId === d.id)) return '';
+  return `<div class="review"><p>🚗 Adicionar <b>${a}</b> às despesas do ${p}?</p><div class="chips"><button class="chip on" data-act="carUse" data-k="exp">Adicionar</button><button class="chip" data-act="carNo">Não</button></div></div>`;
+}
+function csvCell(v) { v = v == null ? '' : typeof v === 'number' ? (Number.isInteger(v) && Math.abs(v) < 100000 && false ? String(v) : String(v.toFixed(2)).replace('.', ',')) : String(v); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function csvBlob(rows) { return new Blob(['﻿' + rows.map(r => r.map(csvCell).join(';')).join('\r\n')], { type: 'text/csv' }); }
+Object.assign(ACT, {
+  carFlt: el => { S.carFilter = el.dataset.f; vGarage(); },
+  carYear: el => { S.carYear = +el.dataset.y; vGarage(); },
+  carTab: el => { S.carTab = el.dataset.t; vCar(curCar().id); },
+  carDua: () => pickCarImage('dua'),
+  carPic: () => pickCarImage('pic'),
+  carPhotoNew: () => pickCarImage('photo'),
+  carDuaRead: () => pickCarImage('dua-car'),
+  carPhotoAct: () => { const c = curCar(); if (c && !c.photo) return pickCarImage('photo'); const im = $('img[data-cphoto]'); if (im?.src) { $('#vImg').src = im.src; $('#viewer').hidden = false; } },
+  carSave: () => createCar(),
+  carCancel: () => { S.carDraft = null; history.back(); },
+  carAddDoc: () => { pickFor = null; S.pendingCar = curCar().id; addSheet(); },
+  carDel: async () => { const c = curCar(); if (!confirm(`Apagar o carro ${fmtPlate(c.plate)}? Os documentos ficam no arquivo.`)) return; if (c.photo) await dbDel('pages', c.photo); for (const d of S.docs) if (d.carId === c.id) { delete d.carId; await saveDoc(d); } S.cars = S.cars.filter(x => x !== c); await saveCars(); history.replaceState(null, '', '#/f/carros'); render(); },
+  expAdd: async () => { const c = curCar(); (c.expenses ||= []).push({ id: uid(), date: todayISO(), desc: '', cat: 'Peças', amount: null }); await saveCar(c); vCar(c.id); setTimeout(() => { const l = [...document.querySelectorAll('.exp .ed')].pop(); l && l.focus(); }, 50); },
+  expDel: async el => { const c = curCar(); const e = c.expenses[+el.dataset.i]; if ((e.desc || e.amount) && !confirm('Apagar esta despesa?')) return; c.expenses.splice(+el.dataset.i, 1); await saveCar(c); vCar(c.id); },
+  carUse: async el => {
+    const d = curDoc(), car = carOfDoc(d); if (!car) return;
+    if (el.dataset.k === 'buy') { car.buyPrice = d.amount; if (!car.buyDate && d.date) car.buyDate = d.date; }
+    else if (el.dataset.k === 'sell') { car.sellPrice = d.amount; car.status = 'vendido'; if (!car.sellDate) car.sellDate = d.date || todayISO(); }
+    else (car.expenses ||= []).push({ id: uid(), date: d.date || todayISO(), desc: [d.type, d.entity].filter(Boolean).join(' ') || d.title, cat: CAT2EXP[carCat(d, car)] || 'Outros', amount: d.amount, docId: d.id });
+    d.carAsked = true; await saveCar(car); await saveDoc(d); toast(`Guardado no ${fmtPlate(car.plate)}`); vDoc(d.id);
+  },
+  carNo: async () => { const d = curDoc(); d.carAsked = true; await saveDoc(d); vDoc(d.id); },
+  carCsv: () => {
+    const c = curCar(), k = carCalc(c);
+    const rows = [['Carro', fmtPlate(c.plate), carName(c)], [], ['Data', 'Descrição', 'Categoria', 'Valor (€)'], [c.buyDate || '', 'Compra' + (c.buyFrom ? ' a ' + c.buyFrom : ''), 'Compra', k.buy]];
+    for (const e of c.expenses || []) rows.push([e.date || '', e.desc || '', e.cat || '', +e.amount || 0]);
+    rows.push([], ['', 'Custo total', '', k.cost]);
+    if (k.sold) rows.push([c.sellDate || '', 'Venda' + (c.sellTo ? ' a ' + c.sellTo : ''), 'Venda', +c.sellPrice], ['', 'Lucro', '', k.profit], ['', 'Dias em stock', '', k.days != null ? String(k.days) : '']);
+    offerFile(csvBlob(rows), `Contas ${fmtPlate(c.plate)} ${carName(c)}.csv`, 'Contas do carro (abre no Excel ou Numbers)');
+  },
+  garCsv: () => {
+    const rows = [['Matrícula', 'Marca', 'Modelo', 'Estado', 'Data compra', 'Compra (€)', 'Despesas (€)', 'Custo total (€)', 'Data venda', 'Venda (€)', 'Lucro (€)', 'Dias em stock']];
+    for (const c of S.cars) { const k = carCalc(c); rows.push([fmtPlate(c.plate), c.brand || '', c.model || '', (STATUS[c.status] || STATUS.stock)[0], c.buyDate || '', k.buy, k.exp, k.cost, c.sellDate || '', k.sold ? +c.sellPrice : '', k.sold ? k.profit : '', k.days != null ? String(k.days) : '']); }
+    offerFile(csvBlob(rows), `Carros ${todayISO()}.csv`, 'Tabela de todos os carros (abre no Excel ou Numbers)');
+  },
 });
 
 /* ---------------- Cópia de segurança (ZIP sem compressão) ---------------- */
@@ -1003,7 +1340,7 @@ async function readZip(file) {
   };
 }
 async function buildBackup(docs, full, onp) {
-  const files = [], meta = { app: 'arquivo', version: 2, partial: !full, exported: new Date().toISOString(), folders: S.folders, rules: S.rules, set: { ignoreNifs: S.set.ignoreNifs }, docs: [] };
+  const files = [], meta = { app: 'arquivo', version: 3, cars: S.cars.map(c => ({ ...c })), partial: !full, exported: new Date().toISOString(), folders: S.folders, rules: S.rules, set: { ignoreNifs: S.set.ignoreNifs }, docs: [] };
   const used = new Set();
   for (const d of sortDocs([...docs])) {
     const fo = folderById(d.folder), par = fo && fo.parent ? folderById(fo.parent) : null;
@@ -1018,6 +1355,11 @@ async function buildBackup(docs, full, onp) {
     }
     if (d.text) files.push({ name: `${dd}/texto.txt`, data: d.text });
     meta.docs.push({ ...clean(d), pages, files: fl });
+  }
+  for (const c of meta.cars) {
+    if (!c.photo || (!full && (c.updated || c.created || 0) <= (S.set.lastBackup || 0))) continue;
+    const ph = await dbGet('pages', c.photo); if (!ph) continue;
+    c.photoPath = `carros/${safeName(fmtPlate(c.plate) || c.id)} ${safeName(carName(c))}/foto.jpg`; files.push({ name: c.photoPath, data: ph.blob });
   }
   files.unshift({ name: 'arquivo.json', data: JSON.stringify(meta) });
   return makeZip(files, onp);
@@ -1039,7 +1381,8 @@ async function maybeAutoBackup() {
   const last = S.set.lastBackup || 0;
   if (Date.now() - last < (+S.set.bkFreq || 7) * 864e5 || Date.now() < (S.set.bkSnooze || 0)) return;
   const changed = S.docs.filter(d => (d.updated || d.created) > last);
-  if (last && !changed.length) return;
+  const carsChanged = S.cars.some(c => (c.updated || c.created) > last);
+  if (last && !changed.length && !carsChanged) return;
   bkChecked = Date.now();
   const full = !S.set.lastFull || Date.now() - S.set.lastFull > 30 * 864e5;
   const lbl = 'A preparar a cópia de segurança automática…';
@@ -1057,6 +1400,13 @@ async function importBackup(file) {
     const z = await readZip(file); if (!z.has('arquivo.json')) throw new Error('Este .zip não é uma cópia do Arquivo.');
     const meta = JSON.parse(await (await z.blob('arquivo.json')).text());
     for (const f of meta.folders || []) if (!folderById(f.id)) S.folders.push(f);
+    for (const c of meta.cars || []) {
+      const ex = carById(c.id); if (ex && (ex.updated || ex.created || 0) >= (c.updated || c.created || 0)) continue;
+      const { photoPath, ...car } = c;
+      if (photoPath) { const b = await z.blob(photoPath); if (b) await dbPut('pages', { id: car.photo, docId: 'car:' + car.id, blob: new Blob([await b.arrayBuffer()], { type: 'image/jpeg' }) }); }
+      if (ex) S.cars[S.cars.indexOf(ex)] = car; else S.cars.push(car);
+    }
+    await saveCars();
     S.rules = { ...meta.rules, ...S.rules };
     if (!S.set.ignoreNifs && meta.set?.ignoreNifs) S.set.ignoreNifs = meta.set.ignoreNifs;
     let added = 0, updated = 0, skipped = 0;
@@ -1081,6 +1431,7 @@ async function importBackup(file) {
   try { DB = await idbOpen(); } catch (e) { $('#view').innerHTML = `<div class="empty"><p>Este browser não deixa guardar dados (${esc(e.message)}). Sai do modo privado e tenta outra vez.</p></div>`; return; }
   S.folders = (await dbGet('kv', 'folders')) || DEFAULT_FOLDERS.map(f => ({ ...f, kw: [...f.kw] }));
   S.rules = (await dbGet('kv', 'rules')) || {};
+  S.cars = (await dbGet('kv', 'cars')) || [];
   S.set = Object.assign(S.set, (await dbGet('kv', 'set')) || {});
   S.docs = ((await dbAll('docs')) || []).map(indexDoc);
   L.cfg = (await dbGet('kv', 'lock')) || null;

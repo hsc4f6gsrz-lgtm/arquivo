@@ -124,3 +124,35 @@ details.card textarea{width:100%;min-height:260px;border:0;border-top:.5px solid
 .pad button.fx{background:none;font-size:16px;color:var(--acc)}
 .pad button.fx[hidden]{display:block!important;visibility:hidden}
 .lklink{border:0;background:none;color:var(--acc);font-size:15px;margin-top:22px;padding:8px}
+
+.b-gy{background:var(--line);color:var(--tx2)}
+.pos{color:var(--green)}.neg{color:var(--red)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.st{background:var(--card);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.st small{color:var(--tx2);font-size:12px}.st b{font-size:21px;font-weight:700}
+.carrow .cth{width:78px;height:56px;border-radius:8px;object-fit:cover;flex:none;background:var(--line)}
+.carrow .pl,.carhead .plate{display:inline-block;font-weight:700;letter-spacing:.04em;font-family:ui-monospace,Menlo,monospace;background:#fff;color:#111;border:1.5px solid #222;border-left:9px solid #1f4fb8;border-radius:5px;padding:0 6px;font-size:13px}
+.carrow .s{display:flex;gap:6px;align-items:center}
+.carhead{display:flex;gap:14px;align-items:center;margin-bottom:12px}
+.carhead .cimg{width:132px;height:96px;border-radius:12px;object-fit:cover;background:var(--line);flex:none}
+.carhead .plate{font-size:17px;padding:1px 8px}
+.carhead .t{font-weight:600;font-size:17px;margin-top:4px}.carhead .s{color:var(--tx2);font-size:13px}
+.stsel{margin-top:6px;border:0;border-radius:8px;background:var(--card);padding:5px 8px;font-size:14px!important}
+.carhero{width:100%;max-height:220px;object-fit:cover;border-radius:var(--r);margin-bottom:10px}
+.profit{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:8px;background:var(--card);border-radius:var(--r);padding:12px 14px}
+.profit div{display:flex;flex-direction:column}.profit small{font-size:12px;color:var(--tx2)}.profit b{font-size:18px}
+.profit.pos div:first-child b{color:var(--green)}.profit.neg div:first-child b{color:var(--red)}
+.seg{display:flex;background:var(--line);border-radius:10px;padding:2px;margin:14px 0 4px}
+.seg button{flex:1;border:0;background:none;padding:8px 4px;border-radius:8px;font-size:14px;font-weight:500}
+.seg button.on{background:var(--card);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.exp{display:grid;grid-template-columns:1fr 96px;grid-template-areas:"d a" "t e";gap:4px 8px;padding:10px 14px;border-bottom:.5px solid var(--line)}
+.exp input,.exp select{border:0;background:none;outline:none;padding:4px 0;min-width:0}
+.exp .ed{grid-area:d;font-weight:500}.exp .ea{grid-area:a;text-align:right;font-weight:600}
+.exp .edt{grid-area:t;color:var(--tx2);font-size:14px!important}
+.exp .ec{grid-area:e;color:var(--tx2);font-size:14px!important;text-align:right;direction:rtl}
+.exp .eb{grid-column:1/3;display:flex;justify-content:flex-end;gap:8px;margin-top:-2px}
+.exp .eb button{border:0;background:var(--bg);border-radius:14px;padding:3px 10px;font-size:13px}
+.row.tot{background:var(--bg)}
+.sum .r{display:flex;justify-content:space-between;padding:9px 14px;border-bottom:.5px solid var(--line)}
+.sum .r:last-child{border-bottom:0}.sum .r.sub{padding:3px 14px 3px 28px;font-size:13px;color:var(--tx2);border-bottom:0}
+.sum .r.big{font-size:17px}.sum .r.big b{font-size:19px}
