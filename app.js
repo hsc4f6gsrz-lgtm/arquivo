@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.6';
+const VERSION = '1.7';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1149,7 +1149,13 @@ function vCarNew() {
    ${inp('model', 'Modelo', 'placeholder="Corolla"')}
    ${inp('year', '1.ª matrícula', 'type="date"')}
    <div class="f"><label>Estado</label><select data-cd="status">${Object.entries(STATUS).map(([k, [t]]) => `<option value="${k}"${f.status === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
-   ${f.status !== 'pessoal' ? inp('buyDate', 'Data compra', 'type="date"') + inp('buyPrice', 'Valor compra €', 'inputmode="decimal" placeholder="0,00"') + inp('buyFrom', 'Comprado a', 'placeholder="—"') : ''}
+   ${f.status !== 'pessoal' ? (() => {
+      const elig = tradeEligible(null);
+      let h = elig.length ? `<div class="f"><label>Origem</label><select data-cd="origin"><option value="">Compra normal</option>${elig.map(a => `<option value="${a.id}"${f.origin === a.id ? ' selected' : ''}>Retoma do ${esc(fmtPlate(a.plate) + ' ' + carName(a))}</option>`).join('')}</select></div>` : '';
+      h += inp('buyDate', f.origin ? 'Data da troca' : 'Data compra', 'type="date"');
+      if (f.origin) { const a = carById(f.origin); h += inp('tradeValue', 'Avaliação €', 'inputmode="decimal" placeholder="o que pagarias por ele"') + inp('tradeCash', 'Dinheiro recebido €', `inputmode="decimal" placeholder="na venda do ${esc(fmtPlate(a?.plate))}"`); }
+      else h += inp('buyPrice', 'Valor compra €', 'inputmode="decimal" placeholder="0,00"') + inp('buyFrom', 'Comprado a', 'placeholder="—"');
+      return h; })() : ''}
    ${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}
   </div>
   <button class="btn pri" data-act="carSave">Criar carro</button>
@@ -1238,14 +1244,31 @@ $('#carIn').onchange = async e => {
     }
   } catch (err) { busy(false); alert('Erro: ' + (err.message || err)); }
 };
+function tradeEligible(b) { return S.cars.filter(a => a !== b && a.status !== 'pessoal' && !(a.trade && a.trade.on && a.trade.carId && carById(a.trade.carId)) && !(b && chainOf(a).includes(b))); }
+// liga o carro vendido A ao carro B recebido em retoma
+async function linkTrade(a, b, value, cash) {
+  a.trade ||= { on: false, cash: null, value: null, carId: null };
+  if (value == null) value = a.trade.value ?? (b.buyPrice != null && b.buyPrice !== '' ? +b.buyPrice : null);
+  if (cash == null) cash = a.trade.on ? a.trade.cash : null;
+  if (cash == null && a.sellPrice != null && a.sellPrice !== '') {
+    cash = confirm(`A venda do ${fmtPlate(a.plate)} estava registada por ${eur0(+a.sellPrice)}.\n\nEsse valor JÁ INCLUI a retoma de ${eur0(value || 0)}?\n\nOK = sim (o dinheiro recebido foi ${eur0(+a.sellPrice - (value || 0))})\nCancelar = não (recebeste ${eur0(+a.sellPrice)} em dinheiro mais o carro)`) ? +a.sellPrice - (value || 0) : +a.sellPrice;
+  }
+  Object.assign(a.trade, { on: true, cash, value, carId: b.id });
+  if (a.status !== 'vendido') { a.status = 'vendido'; if (!a.sellDate) a.sellDate = b.buyDate || todayISO(); }
+  a.sellPrice = carCalc(a).sellVal; syncTrade(a); await saveCar(a);
+}
 async function createCar() {
   const dr = carDraftFields(), f = dr.f;
   if (!np(f.plate) && !f.brand && !f.model) return toast('Escreve pelo menos a matrícula ou a marca e o modelo');
   if (np(f.plate) && S.cars.some(c => np(c.plate) === np(f.plate))) { if (!confirm(`Já existe um carro com a matrícula ${fmtPlate(f.plate)}. Criar outro na mesma? (Útil se o voltaste a comprar.)`)) return; }
-  const c = { id: uid(), created: Date.now(), expenses: [], ...f, plate: fmtPlate(f.plate) };
+  const { origin, tradeValue, tradeCash, ...ff } = f;
+  const c = { id: uid(), created: Date.now(), expenses: [], ...ff, plate: fmtPlate(f.plate) };
   if (c.buyPrice != null && c.buyPrice !== '') c.buyPrice = parseNum(c.buyPrice);
+  const srcA = origin && carById(origin);
+  if (srcA && (tradeValue == null || String(tradeValue).trim() === '')) return toast('Escreve a avaliação da retoma');
   if (dr.photo) { c.photo = 'cp-' + uid(); await dbPut('pages', { id: c.photo, docId: 'car:' + c.id, blob: dr.photo }); c.thumb = dr.thumb; }
   S.cars.push(c); await saveCar(c);
+  if (srcA) await linkTrade(srcA, c, parseNum(tradeValue), tradeCash != null && String(tradeCash).trim() !== '' ? parseNum(tradeCash) : null);
   if (dr.dua) { busy(true, 'A arquivar o DUA…', null); await buildDoc({ photos: [dr.dua.blob], files: [], preTexts: [dr.dua.text], carId: c.id, title: 'Documento Único ' + fmtPlate(c.plate), folder: 'car-doc' }); busy(false); }
   S.carDraft = null; history.replaceState(null, '', '#/car/' + c.id); render(); toast('Carro criado');
 }
@@ -1276,7 +1299,11 @@ async function vCar(id) {
     if (!pess) {
       html += `<div class="sec s-buy"><div class="sh"><span>🛒 Compra</span><b>${eur0(k.buy)}</b></div><div class="form">${inp('buyDate', 'Data', 'type="date"')}`;
       if (k.src) html += `<div class="f"><label>Valor</label><span class="ro">${eur0(k.buy)}</span></div><button class="row chev" data-go="#/car/${k.src.id}"><span class="em">🔁</span><div class="mid"><div class="t">Recebido em retoma do ${esc(fmtPlate(k.src.plate))}</div><div class="s">O valor vem da avaliação feita nessa venda — muda-o lá</div></div></button>`;
-      else html += inp('buyPrice', 'Valor €', 'inputmode="decimal" placeholder="0,00"', money('buyPrice'));
+      else {
+        html += inp('buyPrice', 'Valor €', 'inputmode="decimal" placeholder="0,00"', money('buyPrice'));
+        const elig = tradeEligible(c);
+        if (elig.length) html += `<div class="f"><label>Foi retoma?</label><select data-car="fromLink"><option value="">Não, compra normal</option>${elig.map(a => `<option value="${a.id}">Sim, do ${esc(fmtPlate(a.plate) + ' ' + carName(a))}</option>`).join('')}</select></div>`;
+      }
       html += `${inp('buyFrom', 'Comprado a', 'placeholder="—"')}${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}</div></div>`;
     }
     html += `<div class="sec s-exp"><div class="sh"><span>🔧 ${pess ? 'Gastos' : 'Despesas'}</span><b>${eur0(k.exp)}</b></div>${(c.expenses || []).map((e, i) => `<div class="exp">
@@ -1342,13 +1369,22 @@ async function vCar(id) {
   const im = v.querySelector('img[data-cphoto]'); if (im && im.dataset.cphoto) pageURL(im.dataset.cphoto).then(u => im.src = u || carThumb(c));
 }
 async function carChange(el) {
-  if (el.dataset.cd) { const dr = carDraftFields(); dr.f[el.dataset.cd] = el.value; if (el.dataset.cd === 'status') vCarNew(); return; }
+  if (el.dataset.cd) {
+    const dr = carDraftFields(), k = el.dataset.cd; dr.f[k] = el.value;
+    if (k === 'origin' && el.value) { const a = carById(el.value); if (a?.trade?.cash != null && !dr.f.tradeCash) dr.f.tradeCash = String(a.trade.cash).replace('.', ','); if (a?.sellDate && !dr.f.buyDate) dr.f.buyDate = a.sellDate; }
+    if (k === 'status' || k === 'origin') vCarNew(); return;
+  }
   const c = curCar(); if (!c) return;
+  if (el.dataset.car === 'fromLink') {
+    const a = el.value && carById(el.value); if (!a) return;
+    if (c.buyPrice == null || c.buyPrice === '') { const v = prompt(`Avaliação da retoma (o que pagaste por este carro na troca com o ${fmtPlate(a.plate)}), em €:`); if (v == null || !v.trim()) { el.value = ''; return; } c.buyPrice = parseNum(v); }
+    await linkTrade(a, c, +c.buyPrice, null); await saveCar(c); toast(`Ligado como retoma do ${fmtPlate(a.plate)}`); return vCar(c.id);
+  }
   if (el.dataset.car && el.dataset.car.startsWith('trade')) {
     const key = el.dataset.car; c.trade ||= { on: false, cash: null, value: null, carId: null };
     if (key === 'tradeOn') { c.trade.on = el.checked; if (el.checked && c.trade.cash == null && c.sellPrice != null && c.sellPrice !== '') c.trade.cash = +c.sellPrice; }
     else if (key === 'tradeCash' || key === 'tradeValue') c.trade[key === 'tradeCash' ? 'cash' : 'value'] = el.value.trim() ? parseNum(el.value) : null;
-    else if (key === 'tradeLink') { if (!el.value) return; const b = carById(el.value); if (!b) return; if (b.buyPrice != null && b.buyPrice !== '' && c.trade.value == null) c.trade.value = +b.buyPrice; c.trade.carId = b.id; }
+    else if (key === 'tradeLink') { if (!el.value) return; const b = carById(el.value); if (!b) return; await linkTrade(c, b, c.trade.value ?? (b.buyPrice != null && b.buyPrice !== '' ? +b.buyPrice : null), c.trade.cash); return vCar(c.id); }
     const kk = carCalc(c);
     c.sellPrice = c.trade.on ? (kk.sold ? kk.sellVal : null) : c.sellPrice;
     if (c.trade.on && kk.sold && c.status !== 'vendido') { c.status = 'vendido'; if (!c.sellDate) c.sellDate = todayISO(); toast('Marcado como vendido'); }
