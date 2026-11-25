@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.5';
+const VERSION = '1.6';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1071,15 +1071,33 @@ function carCat(d, c) {
   }
   return { 'car-doc': 'dua', 'car-iuc': 'iuc', 'car-insp': 'insp', 'car-seg': 'seguro', 'fin-seguros': 'seguro', 'car-multas': 'multas', 'car-port': 'multas', 'car-rep': 'rep', 'ativ-forn': 'rep', 'ativ-cli': 'rep' }[d.folder] || 'outros';
 }
+function tradeSrc(c) { const a = c.fromTrade && carById(c.fromTrade); return a && a.trade && a.trade.on && a.trade.carId === c.id ? a : null; }
 function carCalc(c) {
-  const buy = c.buyPrice != null && c.buyPrice !== '' ? +c.buyPrice : 0;
+  const src = tradeSrc(c);
+  const buyRaw = src ? src.trade.value : c.buyPrice;
+  const buy = buyRaw != null && buyRaw !== '' ? +buyRaw : 0;
   const exp = sum((c.expenses || []).map(e => e.amount));
   const cost = buy + exp;
-  const sold = c.sellPrice != null && c.sellPrice !== '';
-  const profit = sold ? +c.sellPrice - cost : null;
+  const tr = c.trade && c.trade.on ? c.trade : null;
+  const sellVal = tr ? ((tr.cash != null || tr.value != null) ? (+tr.cash || 0) + (+tr.value || 0) : null) : (c.sellPrice != null && c.sellPrice !== '' ? +c.sellPrice : null);
+  const sold = sellVal != null;
+  const profit = sold ? sellVal - cost : null;
   const end = c.sellDate || todayISO();
   const days = c.buyDate ? Math.max(0, daysBetween(c.buyDate, end)) : null;
-  return { buy, exp, cost, sold, profit, margin: sold && cost ? profit / cost : null, days, perDay: sold && days ? profit / days : null };
+  const tVal = tr ? (+tr.value || 0) : 0, tCar = tr && tr.carId ? carById(tr.carId) : null;
+  const tCarSold = tCar ? (tCar.trade && tCar.trade.on ? (tCar.trade.cash != null || tCar.trade.value != null) : tCar.sellPrice != null && tCar.sellPrice !== '') : false;
+  const pending = sold && tr && tVal > 0 && !tCarSold ? tVal : 0; // lucro ainda «preso» no carro da retoma
+  return { buy, exp, cost, sold, sellVal, profit, margin: sold && cost ? profit / cost : null, days, perDay: sold && days ? profit / days : null, tr, tVal, tCar, pending, cashIn: tr ? (+tr.cash || 0) : sellVal, src };
+}
+function chainOf(c) {
+  let r = c, g = 0; while (tradeSrc(r) && g++ < 30) r = tradeSrc(r);
+  const arr = [r]; g = 0;
+  while (r.trade && r.trade.on && r.trade.carId && carById(r.trade.carId) && g++ < 30) { r = carById(r.trade.carId); arr.push(r); }
+  return arr;
+}
+function syncTrade(a) {
+  const b = a.trade && a.trade.carId && carById(a.trade.carId); if (!b) return null;
+  b.fromTrade = a.id; b.buyPrice = a.trade.value ?? null; if (a.sellDate) b.buyDate = a.sellDate; if (!b.buyFrom && a.sellTo) b.buyFrom = a.sellTo; b.updated = Date.now(); return b;
 }
 const eur0 = n => (n == null || isNaN(n)) ? '—' : Number(n).toLocaleString('pt-PT', { style: 'currency', currency: 'EUR', maximumFractionDigits: Math.abs(n) >= 1000 ? 0 : 2 });
 function carThumb(c) { return c.thumb || 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="110"><rect width="160" height="110" fill="#dde3ec"/><text x="80" y="70" font-size="48" text-anchor="middle">🚗</text></svg>'); }
@@ -1087,7 +1105,7 @@ function statusBadge(c) { const [t, cl] = STATUS[c.status] || STATUS.stock; retu
 function carRow(c) {
   const k = carCalc(c);
   const line = c.status === 'pessoal' ? `Gastos: ${eur0(k.exp)}` : k.sold ? `Lucro ${eur0(k.profit)}` : `Investido ${eur0(k.cost)}${k.days != null ? ` · ${k.days} dias` : ''}`;
-  return `<button class="row carrow" data-go="#/car/${c.id}"><img class="cth" src="${carThumb(c)}" alt=""><div class="mid"><div class="pl">${esc(fmtPlate(c.plate) || 'sem matrícula')}</div><div class="t">${esc(carName(c))}${c.year ? ` <span class="muted">${esc(String(c.year).slice(0, 4))}</span>` : ''}</div><div class="s">${statusBadge(c)} <span class="${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}">${line}</span></div></div></button>`;
+  return `<button class="row carrow" data-go="#/car/${c.id}"><img class="cth" src="${carThumb(c)}" alt=""><div class="mid"><div class="pl">${esc(fmtPlate(c.plate) || 'sem matrícula')}</div><div class="t">${esc(carName(c))}${c.year ? ` <span class="muted">${esc(String(c.year).slice(0, 4))}</span>` : ''}</div><div class="s">${statusBadge(c)} <span class="${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}">${line}</span></div>${k.src ? `<div class="s">🔁 retoma do ${esc(fmtPlate(k.src.plate))}</div>` : ''}${k.pending ? `<div class="s">⏳ ${eur0(k.pending)} ainda no carro da retoma</div>` : ''}</div></button>`;
 }
 function vGarage() {
   const f = folderById('carros'); setBar(`${f.emoji || '🚗'} ${f.name}`, true, false);
@@ -1098,12 +1116,12 @@ function vGarage() {
   const sold = biz.filter(c => c.status === 'vendido' && (c.sellDate || '').startsWith(String(yr)));
   const stock = biz.filter(c => c.status !== 'vendido');
   const ks = sold.map(carCalc);
-  const profit = sum(ks.map(k => k.profit)), dd = ks.map(k => k.days).filter(x => x != null);
+  const profit = sum(ks.map(k => k.profit)), dd = ks.map(k => k.days).filter(x => x != null), pend = sum(ks.map(k => k.pending));
   const flt = S.carFilter;
   const list = S.cars.filter(c => flt === 'todos' || (flt === 'stock' ? ['stock', 'venda'].includes(c.status) : c.status === flt))
     .sort((a, b) => (a.status === 'vendido') - (b.status === 'vendido') || (b.sellDate || b.buyDate || '').localeCompare(a.sellDate || a.buyDate || '') || b.created - a.created);
   let html = '';
-  if (biz.length) html += `<div class="stats"><div class="st"><small>Lucro ${yr}</small><b class="${profit >= 0 ? 'pos' : 'neg'}">${eur0(profit)}</b></div><div class="st"><small>Vendidos ${yr}</small><b>${sold.length}</b></div><div class="st"><small>Em stock</small><b>${stock.length}</b><small>${eur0(sum(stock.map(c => carCalc(c).cost)))} investidos</small></div><div class="st"><small>Média até vender</small><b>${dd.length ? Math.round(sum(dd) / dd.length) + ' dias' : '—'}</b><small>${sold.length ? 'lucro médio ' + eur0(profit / sold.length) : ''}</small></div></div>
+  if (biz.length) html += `<div class="stats"><div class="st"><small>Lucro ${yr}</small><b class="${profit >= 0 ? 'pos' : 'neg'}">${eur0(profit)}</b>${pend ? `<small>já em dinheiro: <b class="${profit - pend >= 0 ? 'pos' : 'neg'}">${eur0(profit - pend)}</b></small><small>${eur0(pend)} em retomas por vender</small>` : ''}</div><div class="st"><small>Vendidos ${yr}</small><b>${sold.length}</b></div><div class="st"><small>Em stock</small><b>${stock.length}</b><small>${eur0(sum(stock.map(c => carCalc(c).cost)))} investidos</small></div><div class="st"><small>Média até vender</small><b>${dd.length ? Math.round(sum(dd) / dd.length) + ' dias' : '—'}</b><small>${sold.length ? 'lucro médio ' + eur0(profit / sold.length) : ''}</small></div></div>
   ${years.length > 1 ? `<div class="chips" style="margin-top:8px">${years.map(y => `<button class="chip${y === yr ? ' on' : ''}" data-act="carYear" data-y="${y}">${y}</button>`).join('')}</div>` : ''}`;
   html += `<div class="chips" style="margin:14px 0 8px">${[['todos', 'Todos'], ['stock', 'Em stock'], ['vendido', 'Vendidos'], ['pessoal', 'Pessoais']].map(([k, t]) => `<button class="chip${flt === k ? ' on' : ''}" data-act="carFlt" data-f="${k}">${t}</button>`).join('')}</div>`;
   html += list.length ? `<div class="card">${list.map(carRow).join('')}</div>` : `<div class="empty"><div class="big">🚗</div><p>${S.cars.length ? 'Nenhum carro neste filtro.' : 'Ainda não tens carros. Cria o primeiro: o mais rápido é fotografar o Documento Único.'}</p></div>`;
@@ -1242,37 +1260,64 @@ async function vCar(id) {
   let html = `<div class="carhead"><img class="cimg" src="${c.photo ? '' : carThumb(c)}" data-cphoto="${c.photo || ''}" data-act="carPhotoAct" alt="">
    <div class="cinfo"><div class="plate">${esc(fmtPlate(c.plate) || '—')}</div><div class="t">${esc(carName(c))}</div><div class="s">${esc([c.year ? String(c.year).slice(0, 4) : '', c.fuel, c.cc ? c.cc + ' cm³' : ''].filter(Boolean).join(' · '))}</div>
    <select data-car="status" class="stsel">${Object.entries(STATUS).map(([s, [t]]) => `<option value="${s}"${c.status === s ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>`;
-  if (!pess) html += `<div class="profit ${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}"><div><small>${k.sold ? 'Lucro' : 'Investido até agora'}</small><b>${k.sold ? eur0(k.profit) : eur0(k.cost)}</b></div><div><small>${k.sold ? 'Margem' : 'Dias em stock'}</small><b>${k.sold ? (k.margin != null ? Math.round(k.margin * 100) + '%' : '—') : (k.days ?? '—')}</b></div><div><small>${k.sold ? 'Dias até vender' : 'Preço pedido'}</small><b>${k.sold ? (k.days ?? '—') : (c.askPrice ? eur0(c.askPrice) : '—')}</b></div></div>`;
+  if (!pess) html += `<div class="profit ${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}"><div><small>${k.sold ? (k.pending ? 'Lucro (provisório)' : 'Lucro') : 'Investido até agora'}</small><b>${k.sold ? eur0(k.profit) : eur0(k.cost)}</b></div><div><small>${k.sold ? 'Margem' : 'Dias em stock'}</small><b>${k.sold ? (k.margin != null ? Math.round(k.margin * 100) + '%' : '—') : (k.days ?? '—')}</b></div><div><small>${k.sold ? 'Dias até vender' : 'Preço pedido'}</small><b>${k.sold ? (k.days ?? '—') : (c.askPrice ? eur0(c.askPrice) : '—')}</b></div></div>`;
   html += `<div class="seg">${[['contas', pess ? 'Gastos' : 'Contas'], ['docs', `Documentos (${docs.length})`], ['dados', 'Dados']].map(([t, n]) => `<button class="${tab === t ? 'on' : ''}" data-act="carTab" data-t="${t}">${n}</button>`).join('')}</div>`;
   const inp = (key, lbl, extra = '', val) => `<div class="f"><label>${lbl}</label><input data-car="${key}" value="${esc(val ?? c[key] ?? '')}" ${extra}></div>`;
   const money = key => (c[key] != null && c[key] !== '' ? String(Number(c[key]).toFixed(2)).replace('.', ',') : '');
   if (tab === 'contas') {
-    if (!pess) html += `<h2>Compra</h2><div class="card form">${inp('buyDate', 'Data', 'type="date"')}${inp('buyPrice', 'Valor €', 'inputmode="decimal" placeholder="0,00"', money('buyPrice'))}${inp('buyFrom', 'Comprado a', 'placeholder="—"')}${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}</div>`;
-    html += `<h2>Despesas</h2><div class="card">${(c.expenses || []).map((e, i) => `<div class="exp">
+    const ch = chainOf(c);
+    if (ch.length > 1) {
+      const sold = ch.filter(x => carCalc(x).sold), last = ch[ch.length - 1], lk = carCalc(last);
+      const tot = sum(sold.map(x => carCalc(x).profit)), pendC = lk.sold ? 0 : (carCalc(ch[ch.length - 2]).tVal || 0);
+      html += `<div class="sec s-trade"><div class="sh"><span>🔁 Cadeia de retomas</span><b>${eur0(tot)}</b></div>
+       ${ch.map((x, i) => { const kx = carCalc(x); return `<button class="row${x === c ? ' cur' : ''}" data-go="#/car/${x.id}"><span class="em">${i + 1}</span><div class="mid"><div class="t">${esc(fmtPlate(x.plate) || 'sem matrícula')} · ${esc(carName(x))}</div><div class="s">${kx.sold ? `vendido por ${eur0(kx.sellVal)}${kx.tr ? ` (${eur0(kx.tr.cash || 0)} + retoma ${eur0(kx.tVal)})` : ''}` : 'por vender'}</div></div><b class="${kx.sold ? (kx.profit >= 0 ? 'pos' : 'neg') : ''}">${kx.sold ? eur0(kx.profit) : '—'}</b></button>`; }).join('')}
+       <div class="r2">${lk.sold ? 'Cadeia fechada: este é o lucro real de todas as trocas.' : `Lucro já em dinheiro: <b>${eur0(tot - pendC)}</b> · ainda no ${esc(fmtPlate(last.plate) || 'último carro')}: <b>${eur0(pendC)}</b> (só fica certo quando o venderes)`}</div></div>`;
+    }
+    if (!pess) {
+      html += `<div class="sec s-buy"><div class="sh"><span>🛒 Compra</span><b>${eur0(k.buy)}</b></div><div class="form">${inp('buyDate', 'Data', 'type="date"')}`;
+      if (k.src) html += `<div class="f"><label>Valor</label><span class="ro">${eur0(k.buy)}</span></div><button class="row chev" data-go="#/car/${k.src.id}"><span class="em">🔁</span><div class="mid"><div class="t">Recebido em retoma do ${esc(fmtPlate(k.src.plate))}</div><div class="s">O valor vem da avaliação feita nessa venda — muda-o lá</div></div></button>`;
+      else html += inp('buyPrice', 'Valor €', 'inputmode="decimal" placeholder="0,00"', money('buyPrice'));
+      html += `${inp('buyFrom', 'Comprado a', 'placeholder="—"')}${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}</div></div>`;
+    }
+    html += `<div class="sec s-exp"><div class="sh"><span>🔧 ${pess ? 'Gastos' : 'Despesas'}</span><b>${eur0(k.exp)}</b></div>${(c.expenses || []).map((e, i) => `<div class="exp">
       <input class="ed" data-exp="desc" data-i="${i}" value="${esc(e.desc || '')}" placeholder="Descrição">
       <input class="ea" data-exp="amount" data-i="${i}" inputmode="decimal" value="${e.amount != null ? String(Number(e.amount).toFixed(2)).replace('.', ',') : ''}" placeholder="0,00 €">
       <input class="edt" type="date" data-exp="date" data-i="${i}" value="${esc(e.date || '')}">
       <select class="ec" data-exp="cat" data-i="${i}">${EXP_CATS.map(x => `<option${e.cat === x ? ' selected' : ''}>${x}</option>`).join('')}</select>
-      <span class="eb">${e.docId && docById(e.docId) ? `<button data-go="#/d/${e.docId}" aria-label="Ver fatura">📎</button>` : ''}<button data-act="expDel" data-i="${i}" aria-label="Apagar">✕</button></span></div>`).join('') || '<div class="row muted">Ainda sem despesas</div>'}
-      <div class="row tot"><div class="mid">Total de despesas</div><b>${eur0(k.exp)}</b></div></div>
-      <button class="btn" data-act="expAdd">＋ Adicionar despesa</button>`;
+      <span class="eb">${e.docId && docById(e.docId) ? `<button data-go="#/d/${e.docId}" aria-label="Ver fatura">📎 fatura</button>` : ''}<button data-act="expDel" data-i="${i}" aria-label="Apagar">✕</button></span></div>`).join('') || '<div class="row muted">Ainda sem despesas</div>'}
+      <button class="addl" data-act="expAdd">＋ Adicionar despesa</button></div>`;
     if (!pess) {
-      html += `<h2>Venda</h2><div class="card form">${inp('askPrice', 'Preço pedido €', 'inputmode="decimal" placeholder="—"', money('askPrice'))}${inp('minPrice', 'Mínimo aceito €', 'inputmode="decimal" placeholder="—"', money('minPrice'))}${inp('sellDate', 'Data venda', 'type="date"')}${inp('sellPrice', 'Valor venda €', 'inputmode="decimal" placeholder="—"', money('sellPrice'))}${inp('sellTo', 'Vendido a', 'placeholder="—"')}${inp('km_out', 'Km venda', 'inputmode="numeric" placeholder="—"')}</div>`;
+      const tr = c.trade || {};
+      html += `<div class="sec s-sell"><div class="sh"><span>💰 Venda</span><b>${k.sold ? eur0(k.sellVal) : '—'}</b></div><div class="form">
+        ${k.sold ? '' : inp('askPrice', 'Preço pedido €', 'inputmode="decimal" placeholder="—"', money('askPrice')) + inp('minPrice', 'Mínimo aceito €', 'inputmode="decimal" placeholder="—"', money('minPrice'))}
+        ${inp('sellDate', 'Data venda', 'type="date"')}
+        <div class="f"><label>Houve retoma?</label><span style="flex:1"></span><input type="checkbox" data-car="tradeOn"${tr.on ? ' checked' : ''}></div>
+        ${tr.on ? `${inp('tradeCash', 'Dinheiro recebido €', 'inputmode="decimal" placeholder="0,00 (negativo se pagaste tu)"', tr.cash != null ? String(Number(tr.cash).toFixed(2)).replace('.', ',') : '')}
+          ${inp('tradeValue', 'Avaliação da retoma €', 'inputmode="decimal" placeholder="o que pagarias pelo carro"', tr.value != null ? String(Number(tr.value).toFixed(2)).replace('.', ',') : '')}
+          <div class="f"><label>Venda total</label><span class="ro">${k.sold ? `${eur0(k.cashIn)} + ${eur0(k.tVal)} = <b>${eur0(k.sellVal)}</b>` : '—'}</span></div>`
+          : inp('sellPrice', 'Valor venda €', 'inputmode="decimal" placeholder="—"', money('sellPrice'))}
+        ${inp('sellTo', 'Vendido a', 'placeholder="—"')}${inp('km_out', 'Km venda', 'inputmode="numeric" placeholder="—"')}</div>
+        ${tr.on ? (k.tCar ? `<button class="row chev" data-go="#/car/${k.tCar.id}"><span class="em">🔁</span><div class="mid"><div class="t">Carro da retoma: ${esc(fmtPlate(k.tCar.plate) || 'sem matrícula')} ${esc(carName(k.tCar))}</div><div class="s">${carCalc(k.tCar).sold ? 'já vendido' : 'por vender'}</div></div></button>`
+          : `<button class="addl" data-act="tradeNew">＋ Criar o carro da retoma</button>${S.cars.filter(x => x !== c && !tradeSrc(x)).length ? `<div class="form"><div class="f"><label>Ou ligar a</label><select data-car="tradeLink"><option value="">um carro já criado…</option>${S.cars.filter(x => x !== c && !tradeSrc(x)).map(x => `<option value="${x.id}">${esc(fmtPlate(x.plate) + ' ' + carName(x))}</option>`).join('')}</select></div></div>` : ''}`) : ''}
+      </div>`;
       const byCat = {}; for (const e of c.expenses || []) byCat[e.cat || 'Outros'] = (byCat[e.cat || 'Outros'] || 0) + (+e.amount || 0);
-      html += `<h2>Resumo</h2><div class="card sum">
-       <div class="r"><span>Compra</span><b>${eur0(k.buy)}</b></div>
+      html += `<div class="sec s-sum"><div class="sh"><span>📊 Resumo</span><b class="${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}">${k.sold ? eur0(k.profit) : ''}</b></div><div class="sum">
+       <div class="r"><span>Compra${k.src ? ' (retoma)' : ''}</span><b>${eur0(k.buy)}</b></div>
        <div class="r"><span>Despesas</span><b>${eur0(k.exp)}</b></div>
        ${Object.entries(byCat).map(([n, v]) => `<div class="r sub"><span>${esc(n)}</span><span>${eur0(v)}</span></div>`).join('')}
        <div class="r big"><span>Custo total</span><b>${eur0(k.cost)}</b></div>
-       ${k.sold ? `<div class="r"><span>Venda</span><b>${eur0(+c.sellPrice)}</b></div>
-       <div class="r big ${k.profit >= 0 ? 'pos' : 'neg'}"><span>Lucro</span><b>${eur0(k.profit)}</b></div>
+       ${k.sold ? `${k.tr ? `<div class="r"><span>Dinheiro recebido</span><b>${eur0(k.cashIn)}</b></div><div class="r"><span>Retoma (avaliação)</span><b>${eur0(k.tVal)}</b></div>` : ''}
+       <div class="r"><span>Venda${k.tr ? ' total' : ''}</span><b>${eur0(k.sellVal)}</b></div>
+       <div class="r big ${k.profit >= 0 ? 'pos' : 'neg'}"><span>Lucro${k.pending ? ' (provisório)' : ''}</span><b>${eur0(k.profit)}</b></div>
+       ${k.pending ? `<div class="r"><span>Já em dinheiro</span><b class="${k.profit - k.pending >= 0 ? 'pos' : 'neg'}">${eur0(k.profit - k.pending)}</b></div><div class="r sub"><span>Ainda no carro da retoma: ${eur0(k.pending)} — só fica certo quando o venderes</span><span></span></div>` : ''}
        <div class="r"><span>Margem sobre o custo</span><b>${k.margin != null ? (k.margin * 100).toFixed(1).replace('.', ',') + '%' : '—'}</b></div>
-       ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>${k.perDay != null ? `<div class="r"><span>Lucro por dia</span><b>${eur0(k.perDay)}</b></div>` : ''}` : ''}`
+       ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>${k.perDay != null ? `<div class="r"><span>Lucro por dia</span><b>${eur0(k.perDay)}</b></div>` : ''}` : ''}
+       ${k.src ? `<div class="r sub"><span>${k.profit >= 0 ? '✓ A avaliação da retoma confirmou-se' : '⚠️ A retoma foi avaliada acima do que rendeu'}</span><span></span></div>` : ''}`
         : `<div class="r"><span>Vender acima de</span><b>${eur0(k.cost)}</b></div><div class="r sub"><span>para não perder dinheiro</span><span></span></div>
        ${c.askPrice ? `<div class="r"><span>Lucro ao preço pedido</span><b class="${c.askPrice - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(c.askPrice - k.cost)}</b></div>` : ''}
        ${c.minPrice ? `<div class="r"><span>Lucro ao preço mínimo</span><b class="${c.minPrice - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(c.minPrice - k.cost)}</b></div>` : ''}
        ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>` : ''}`}
-      </div>`;
+      </div></div>`;
     }
     html += `<button class="btn" data-act="carCsv">📊 Exportar contas (Excel)</button>`;
   } else if (tab === 'docs') {
@@ -1282,14 +1327,14 @@ async function vCar(id) {
     if (!pess && !groups.compra) missing.push('documento de compra/transferência');
     if (c.status === 'vendido' && !groups.venda) missing.push('documento de venda');
     if (missing.length) html += `<div class="note">⚠️ Falta: ${missing.join(', ')}.</div>`;
-    for (const [key, name, em] of CAR_CATS) { const g = groups[key]; if (!g) continue; html += `<h2>${em} ${name}</h2><div class="card">${sortDocs(g).map(d => docRow(d)).join('')}</div>`; }
+    for (const [key, name, em] of CAR_CATS) { const g = groups[key]; if (!g) continue; html += `<div class="sec c-${key}"><div class="sh"><span>${em} ${name}</span><b>${g.length}</b></div>${sortDocs(g).map(d => docRow(d)).join('')}</div>`; }
     if (!docs.length) html += `<div class="empty"><p>Ainda não há documentos deste carro.<br>Todos os documentos que arquivares com a matrícula ${esc(fmtPlate(c.plate))} aparecem aqui sozinhos.</p></div>`;
     html += `<button class="btn pri" data-act="carAddDoc">＋ Adicionar documento a este carro</button>`;
   } else {
-    html += `<div class="card form">${inp('plate', 'Matrícula', 'autocapitalize="characters"')}${inp('brand', 'Marca')}${inp('model', 'Modelo')}${inp('version', 'Versão', 'placeholder="—"')}${inp('year', '1.ª matrícula', 'type="date"')}
+    html += `<div class="sec s-data"><div class="sh"><span>🪪 Dados do carro</span></div><div class="form">${inp('plate', 'Matrícula', 'autocapitalize="characters"')}${inp('brand', 'Marca')}${inp('model', 'Modelo')}${inp('version', 'Versão', 'placeholder="—"')}${inp('year', '1.ª matrícula', 'type="date"')}
      <div class="f"><label>Combustível</label><select data-car="fuel"><option value="">—</option>${['Gasolina', 'Gasóleo', 'Híbrido', 'Elétrico', 'GPL'].map(x => `<option${c.fuel === x ? ' selected' : ''}>${x}</option>`).join('')}</select></div>
      ${inp('cc', 'Cilindrada cm³', 'inputmode="numeric" placeholder="—"')}${inp('vin', 'VIN / quadro', 'autocapitalize="characters" placeholder="—"')}${inp('color', 'Cor', 'placeholder="—"')}
-     <div class="f col"><label>Notas</label><textarea data-car="notes" rows="3" placeholder="Estado, defeitos, o que falta fazer…">${esc(c.notes || '')}</textarea></div></div>
+     <div class="f col"><label>Notas</label><textarea data-car="notes" rows="3" placeholder="Estado, defeitos, o que falta fazer…">${esc(c.notes || '')}</textarea></div></div></div>
      <div class="btns"><button class="btn" data-act="carPhotoNew">📷 Mudar fotografia</button><button class="btn" data-act="carDuaRead">🪪 Ler o DUA</button></div>
      <button class="btn red" data-act="carDel">Apagar carro</button><p class="muted">Apagar o carro não apaga os documentos dele.</p>`;
   }
@@ -1299,6 +1344,16 @@ async function vCar(id) {
 async function carChange(el) {
   if (el.dataset.cd) { const dr = carDraftFields(); dr.f[el.dataset.cd] = el.value; if (el.dataset.cd === 'status') vCarNew(); return; }
   const c = curCar(); if (!c) return;
+  if (el.dataset.car && el.dataset.car.startsWith('trade')) {
+    const key = el.dataset.car; c.trade ||= { on: false, cash: null, value: null, carId: null };
+    if (key === 'tradeOn') { c.trade.on = el.checked; if (el.checked && c.trade.cash == null && c.sellPrice != null && c.sellPrice !== '') c.trade.cash = +c.sellPrice; }
+    else if (key === 'tradeCash' || key === 'tradeValue') c.trade[key === 'tradeCash' ? 'cash' : 'value'] = el.value.trim() ? parseNum(el.value) : null;
+    else if (key === 'tradeLink') { if (!el.value) return; const b = carById(el.value); if (!b) return; if (b.buyPrice != null && b.buyPrice !== '' && c.trade.value == null) c.trade.value = +b.buyPrice; c.trade.carId = b.id; }
+    const kk = carCalc(c);
+    c.sellPrice = c.trade.on ? (kk.sold ? kk.sellVal : null) : c.sellPrice;
+    if (c.trade.on && kk.sold && c.status !== 'vendido') { c.status = 'vendido'; if (!c.sellDate) c.sellDate = todayISO(); toast('Marcado como vendido'); }
+    syncTrade(c); await saveCar(c); return vCar(c.id);
+  }
   if (el.dataset.car) {
     const key = el.dataset.car; let v = el.value;
     if (['buyPrice', 'sellPrice', 'askPrice', 'minPrice'].includes(key)) v = v.trim() ? parseNum(v) : null;
@@ -1306,6 +1361,7 @@ async function carChange(el) {
     c[key] = v;
     if (key === 'sellPrice' && v != null && c.status !== 'vendido') { c.status = 'vendido'; if (!c.sellDate) c.sellDate = todayISO(); toast('Marcado como vendido'); }
     if (key === 'status' && v === 'vendido' && !c.sellDate) c.sellDate = todayISO();
+    if (key === 'sellDate' || key === 'sellTo') syncTrade(c);
     await saveCar(c); S.docs.forEach(indexDoc);
     if (['notes', 'buyFrom', 'sellTo', 'color', 'vin', 'version'].includes(key)) toast('Guardado'); else vCar(c.id);
   } else if (el.dataset.exp) {
@@ -1336,7 +1392,14 @@ Object.assign(ACT, {
   carSave: () => createCar(),
   carCancel: () => { S.carDraft = null; history.back(); },
   carAddDoc: () => { pickFor = null; S.pendingCar = curCar().id; addSheet(); },
-  carDel: async () => { const c = curCar(); if (!confirm(`Apagar o carro ${fmtPlate(c.plate)}? Os documentos ficam no arquivo.`)) return; if (c.photo) await dbDel('pages', c.photo); for (const d of S.docs) if (d.carId === c.id) { delete d.carId; await saveDoc(d); } S.cars = S.cars.filter(x => x !== c); await saveCars(); history.replaceState(null, '', '#/f/carros'); render(); },
+  tradeNew: async () => {
+    const a = curCar(); a.trade ||= { on: true };
+    const b = { id: uid(), created: Date.now(), expenses: [], status: 'stock', plate: '', brand: '', model: '', fromTrade: a.id, buyPrice: a.trade.value ?? null, buyDate: a.sellDate || todayISO(), buyFrom: a.sellTo || '' };
+    S.cars.push(b); a.trade.carId = b.id; syncTrade(a); await saveCar(a);
+    S.carTab = 'dados'; go('#/car/' + b.id); toast('Carro da retoma criado — fotografa o DUA para preencher os dados');
+  },
+  carDel: async () => { const c = curCar(); if (!confirm(`Apagar o carro ${fmtPlate(c.plate)}? Os documentos ficam no arquivo.`)) return;
+    for (const x of S.cars) { if (x.trade && x.trade.carId === c.id) x.trade.carId = null; if (x.fromTrade === c.id) { x.buyPrice = carCalc(x).buy; delete x.fromTrade; } } if (c.photo) await dbDel('pages', c.photo); for (const d of S.docs) if (d.carId === c.id) { delete d.carId; await saveDoc(d); } S.cars = S.cars.filter(x => x !== c); await saveCars(); history.replaceState(null, '', '#/f/carros'); render(); },
   expAdd: async () => { const c = curCar(); (c.expenses ||= []).push({ id: uid(), date: todayISO(), desc: '', cat: 'Peças', amount: null }); await saveCar(c); vCar(c.id); setTimeout(() => { const l = [...document.querySelectorAll('.exp .ed')].pop(); l && l.focus(); }, 50); },
   expDel: async el => { const c = curCar(); const e = c.expenses[+el.dataset.i]; if ((e.desc || e.amount) && !confirm('Apagar esta despesa?')) return; c.expenses.splice(+el.dataset.i, 1); await saveCar(c); vCar(c.id); },
   carUse: async el => {
@@ -1349,15 +1412,16 @@ Object.assign(ACT, {
   carNo: async () => { const d = curDoc(); d.carAsked = true; await saveDoc(d); vDoc(d.id); },
   carCsv: () => {
     const c = curCar(), k = carCalc(c);
-    const rows = [['Carro', fmtPlate(c.plate), carName(c)], [], ['Data', 'Descrição', 'Categoria', 'Valor (€)'], [c.buyDate || '', 'Compra' + (c.buyFrom ? ' a ' + c.buyFrom : ''), 'Compra', k.buy]];
+    const rows = [['Carro', fmtPlate(c.plate), carName(c)], [], ['Data', 'Descrição', 'Categoria', 'Valor (€)'], [c.buyDate || '', (k.src ? 'Retoma do ' + fmtPlate(k.src.plate) : 'Compra') + (c.buyFrom ? ' a ' + c.buyFrom : ''), 'Compra', k.buy]];
     for (const e of c.expenses || []) rows.push([e.date || '', e.desc || '', e.cat || '', +e.amount || 0]);
     rows.push([], ['', 'Custo total', '', k.cost]);
-    if (k.sold) rows.push([c.sellDate || '', 'Venda' + (c.sellTo ? ' a ' + c.sellTo : ''), 'Venda', +c.sellPrice], ['', 'Lucro', '', k.profit], ['', 'Dias em stock', '', k.days != null ? String(k.days) : '']);
+    if (k.sold && k.tr) rows.push([c.sellDate || '', 'Dinheiro recebido' + (c.sellTo ? ' de ' + c.sellTo : ''), 'Venda', k.cashIn], [c.sellDate || '', 'Retoma: ' + (k.tCar ? fmtPlate(k.tCar.plate) + ' ' + carName(k.tCar) : 'carro'), 'Venda', k.tVal]);
+    if (k.sold) rows.push([c.sellDate || '', 'Venda total' + (c.sellTo ? ' a ' + c.sellTo : ''), 'Venda', k.sellVal], ['', k.pending ? 'Lucro (provisório até vender a retoma)' : 'Lucro', '', k.profit], ['', 'Dias em stock', '', k.days != null ? String(k.days) : '']);
     offerFile(csvBlob(rows), `Contas ${fmtPlate(c.plate)} ${carName(c)}.csv`, 'Contas do carro (abre no Excel ou Numbers)');
   },
   garCsv: () => {
-    const rows = [['Matrícula', 'Marca', 'Modelo', 'Estado', 'Data compra', 'Compra (€)', 'Despesas (€)', 'Custo total (€)', 'Data venda', 'Venda (€)', 'Lucro (€)', 'Dias em stock']];
-    for (const c of S.cars) { const k = carCalc(c); rows.push([fmtPlate(c.plate), c.brand || '', c.model || '', (STATUS[c.status] || STATUS.stock)[0], c.buyDate || '', k.buy, k.exp, k.cost, c.sellDate || '', k.sold ? +c.sellPrice : '', k.sold ? k.profit : '', k.days != null ? String(k.days) : '']); }
+    const rows = [['Matrícula', 'Marca', 'Modelo', 'Estado', 'Origem', 'Data compra', 'Compra (€)', 'Despesas (€)', 'Custo total (€)', 'Data venda', 'Dinheiro recebido (€)', 'Retoma (€)', 'Carro da retoma', 'Venda total (€)', 'Lucro (€)', 'Por realizar (€)', 'Dias em stock']];
+    for (const c of S.cars) { const k = carCalc(c); rows.push([fmtPlate(c.plate), c.brand || '', c.model || '', (STATUS[c.status] || STATUS.stock)[0], k.src ? 'Retoma do ' + fmtPlate(k.src.plate) : 'Compra', c.buyDate || '', k.buy, k.exp, k.cost, c.sellDate || '', k.sold ? k.cashIn : '', k.tr ? k.tVal : '', k.tCar ? fmtPlate(k.tCar.plate) : '', k.sold ? k.sellVal : '', k.sold ? k.profit : '', k.pending || '', k.days != null ? String(k.days) : '']); }
     offerFile(csvBlob(rows), `Carros ${todayISO()}.csv`, 'Tabela de todos os carros (abre no Excel ou Numbers)');
   },
 });
