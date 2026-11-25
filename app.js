@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.1';
+const VERSION = '1.2';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -347,7 +347,7 @@ function offerFile(blob, name, label) {
   sheet(`<div class="grp"><p>${esc(label || name)}</p><button class="it b" data-act="doShare">Guardar ou partilhar</button></div><div class="grp"><button class="it" data-act="closeSheet">Cancelar</button></div>`);
 }
 async function doShare() {
-  if (!shareItem) return; const { blob, name } = shareItem; closeSheet();
+  if (!shareItem) return; const { blob, name } = shareItem; closeSheet(); away();
   const file = new File([blob], name, { type: blob.type });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; }
@@ -498,6 +498,7 @@ async function vSettings() {
   let est = null; try { est = await navigator.storage?.estimate(); } catch (e) { }
   let pers = null; try { pers = await navigator.storage?.persisted(); } catch (e) { }
   const mb = x => (x / 1048576).toFixed(x > 1e8 ? 0 : 1) + ' MB';
+  const bio = L.cfg ? await bioAvailable() : false;
   $('#view').innerHTML = `<h2>Cópia de segurança</h2><div class="card form"><div class="f"><label>Última</label><span style="flex:1;text-align:right">${S.set.lastBackup ? fmtDate(isoFromTs(S.set.lastBackup)) : 'nunca'}</span></div></div>
   <button class="btn pri" data-act="backup">💾 Exportar cópia (.zip)</button>
   <button class="btn" data-act="restore">Importar cópia</button>
@@ -507,6 +508,15 @@ async function vSettings() {
    ${est ? `<div class="f"><label>Espaço usado</label><span style="flex:1;text-align:right">${mb(est.usage || 0)}</span></div>` : ''}
    <div class="f"><label>Proteção</label><span style="flex:1;text-align:right">${pers ? '✅ persistente' : pers === false ? 'normal' : '—'}</span></div></div>
    ${pers === false ? '<button class="btn" data-act="persist">Pedir armazenamento persistente</button>' : ''}
+  <h2>Código de acesso</h2><div class="card form">
+   <div class="f"><label>Código</label><span style="flex:1;text-align:right">${L.cfg ? `✅ ativo (${L.cfg.len} dígitos)` : 'desligado'}</span></div>
+   ${L.cfg ? `<div class="f"><label>Bloquear</label><select data-lock="mode"><option value="0"${L.cfg.mode === '0' ? ' selected' : ''}>logo ao sair da app</option><option value="60"${L.cfg.mode === '60' ? ' selected' : ''}>após 1 minuto fora</option><option value="300"${L.cfg.mode === '300' ? ' selected' : ''}>após 5 minutos fora</option></select></div>
+   ${bio ? `<div class="f"><label>Face ID</label><span style="flex:1;text-align:right">${L.cfg.cred ? '✅ ativo' : 'desligado'}</span></div>` : ''}` : ''}
+  </div>
+  ${L.cfg ? `${bio ? (L.cfg.cred ? '<button class="btn" data-act="bioOff">Desligar Face ID</button>' : '<button class="btn" data-act="bioOn">Desbloquear também com Face ID</button>') : ''}
+   <div class="btns"><button class="btn" data-act="lockNow">🔒 Bloquear já</button><button class="btn" data-act="pinChange">Mudar código</button></div>
+   <button class="btn red" data-act="pinOff">Desligar código</button>` : '<button class="btn pri" data-act="pinOn">🔒 Ativar código de acesso</button>'}
+  <p class="muted">Se te esqueceres do código, a única saída é apagar os documentos da app e importar uma cópia de segurança. Faz cópias regularmente.</p>
   <h2>Os vossos NIF</h2><div class="card form"><div class="f col"><label>NIFs a ignorar na identificação da entidade (o teu, o da tua companheira…)</label><input data-set="ignoreNifs" inputmode="numeric" value="${esc(S.set.ignoreNifs || '')}" placeholder="123456789, 987654321"></div></div>
   <h2>Pastas</h2><div class="card">${tops().map(t => `<button class="row chev" data-go="#/fe/${t.id}"><span class="em">${t.emoji || '📁'}</span><div class="mid"><div class="t">${esc(t.name)}</div><div class="s">${kids(t.id).map(k => esc(k.name)).join(', ') || 'sem subpastas'}</div></div></button>`).join('')}</div>
   <button class="btn" data-act="newFolder">＋ Nova pasta</button>
@@ -594,6 +604,83 @@ async function askPersist() { try { if (navigator.storage?.persist && !(await na
 function curDoc() { const m = location.hash.match(/^#\/d\/(.+)$/); return m && docById(m[1]); }
 async function setDocFolder(d, f) { d.folder = f; d.review = false; learn(d); await saveDoc(d); }
 
+/* ---------------- Código de acesso (PIN) ---------------- */
+const L = { cfg: null, locked: false, hiddenAt: 0, grace: 0 };
+let pinCb = null, pinBuf = '', pinLen = 4;
+const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const rnd = n => crypto.getRandomValues(new Uint8Array(n));
+async function pinHash(pin, salt) {
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
+  return b64(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: unb64(salt), iterations: 200000 }, k, 256));
+}
+function drawDots(err) { $('#dots').innerHTML = Array.from({ length: pinLen }, (_, i) => `<i class="${i < pinBuf.length ? 'on' : ''}"></i>`).join(''); if (err) { const d = $('#dots'); d.classList.remove('err'); void d.offsetWidth; d.classList.add('err'); } }
+function showPad(msg, len, cb, o = {}) {
+  pinBuf = ''; pinLen = len; pinCb = cb;
+  $('#lkMsg').textContent = msg; $('#lkSub').textContent = o.sub || '';
+  $('#lkCancel').hidden = !o.cancel; $('#lkForgot').hidden = !o.forgot; $('#lkBio').hidden = !o.bio;
+  drawDots(); $('#lock').hidden = false; document.activeElement?.blur?.();
+}
+function hidePad() { $('#lock').hidden = true; pinCb = null; pinBuf = ''; }
+function padErr(msg) { pinBuf = ''; drawDots(true); $('#lkSub').textContent = msg; if (navigator.vibrate) navigator.vibrate(200); }
+for (const b of document.querySelectorAll('#lock [data-k]')) b.onclick = () => {
+  if (!pinCb || pinBuf.length >= pinLen) return;
+  pinBuf += b.dataset.k; drawDots();
+  if (pinBuf.length === pinLen) { const v = pinBuf; setTimeout(() => pinCb && pinCb(v), 120); }
+};
+$('#lkDel').onclick = () => { pinBuf = pinBuf.slice(0, -1); drawDots(); };
+$('#lkCancel').onclick = () => hidePad();
+function getFails() { try { return JSON.parse(localStorage.getItem('arqFails') || '{"n":0,"until":0}'); } catch (e) { return { n: 0, until: 0 }; } }
+function setFails(f) { try { localStorage.setItem('arqFails', JSON.stringify(f)); } catch (e) { } }
+function lockNow() {
+  if (!L.cfg) return; L.locked = true; closeSheet(); $('#viewer').hidden = true;
+  showPad('Introduz o código', L.cfg.len, tryUnlock, { forgot: true, bio: !!L.cfg.cred });
+}
+async function tryUnlock(v) {
+  const f = getFails();
+  if (Date.now() < f.until) return padErr(`Espera ${Math.ceil((f.until - Date.now()) / 1000)} s`);
+  if (await pinHash(v, L.cfg.salt) === L.cfg.hash) { setFails({ n: 0, until: 0 }); return unlock(); }
+  f.n++; if (f.n >= 5) f.until = Date.now() + 30000 * 2 ** Math.min(f.n - 5, 6);
+  setFails(f); padErr(f.n >= 5 ? `Código errado. Espera ${Math.ceil((f.until - Date.now()) / 1000)} s` : 'Código errado');
+}
+function unlock() { L.locked = false; hidePad(); }
+function away() { L.grace = Date.now() + 5 * 60000; } // câmara, galeria, partilhar: não bloquear ao voltar
+document.addEventListener('visibilitychange', () => {
+  if (!L.cfg) return;
+  if (document.hidden) { L.hiddenAt = Date.now(); if (L.cfg.mode === '0' && !L.locked && Date.now() > L.grace) lockNow(); }
+  else {
+    if (Date.now() < L.grace) { L.grace = 0; return; }
+    if (!L.locked && Date.now() - L.hiddenAt >= (+L.cfg.mode || 0) * 1000) lockNow();
+  }
+});
+$('#lkBio').onclick = async () => {
+  try {
+    await navigator.credentials.get({ publicKey: { challenge: rnd(32), allowCredentials: [{ type: 'public-key', id: unb64(L.cfg.cred) }], userVerification: 'required', timeout: 60000 } });
+    setFails({ n: 0, until: 0 }); unlock();
+  } catch (e) { $('#lkSub').textContent = 'Face ID não confirmou — usa o código'; }
+};
+$('#lkForgot').onclick = async () => {
+  if (!confirm('Sem o código não há forma de abrir os documentos.\n\nQueres APAGAR TODOS os documentos desta app e começar de novo? (Depois podes importar uma cópia de segurança.)')) return;
+  if (!confirm('Tens a certeza? Isto não se pode desfazer.')) return;
+  DB.close(); await new Promise(r => { const q = indexedDB.deleteDatabase('arquivo-docs'); q.onsuccess = q.onerror = q.onblocked = r; });
+  setFails({ n: 0, until: 0 }); location.replace('./');
+};
+async function saveLock() { await dbPut('kv', L.cfg, 'lock'); }
+function setupPin(len, done) {
+  showPad(`Escolhe um código de ${len} dígitos`, len, v1 => {
+    showPad('Repete o código', len, async v2 => {
+      if (v1 !== v2) { toast('Os códigos não coincidem. Tenta outra vez.'); return setupPin(len, done); }
+      const salt = b64(rnd(16));
+      L.cfg = { len, salt, hash: await pinHash(v1, salt), mode: L.cfg?.mode || '0', cred: L.cfg?.cred || null };
+      await saveLock(); hidePad(); toast('Código de acesso ativo'); done && done();
+    }, { cancel: true });
+  }, { cancel: true });
+}
+function verifyPin(msg, ok) {
+  showPad(msg, L.cfg.len, async v => { if (await pinHash(v, L.cfg.salt) === L.cfg.hash) { hidePad(); ok(); } else padErr('Código errado'); }, { cancel: true });
+}
+async function bioAvailable() { try { return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch (e) { return false; } }
+
 const EMOJIS = ['📁', '🏠', '🚗', '💶', '🔧', '💼', '🩺', '🐕', '🧾', '🎓', '⚖️', '🏦', '✈️', '📦', '👶', '🏍️', '🔑', '❤️'];
 let nfDoc = null;
 function newFolderSheet(parent, docId) {
@@ -627,10 +714,22 @@ async function createFolder() {
 const ACT = {
   closeSheet, doShare,
   newFolder: el => newFolderSheet(el.dataset.p, el.dataset.doc),
+  pinOn: () => sheet(`<div class="grp"><p>Que tamanho de código queres?</p><button class="it" data-act="pinLen" data-n="4">4 dígitos</button><button class="it" data-act="pinLen" data-n="6">6 dígitos (mais seguro)</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`),
+  pinLen: el => { closeSheet(); setupPin(+el.dataset.n, vSettings); },
+  pinChange: () => verifyPin('Código atual', () => sheet(`<div class="grp"><p>Novo código</p><button class="it" data-act="pinLen" data-n="4">4 dígitos</button><button class="it" data-act="pinLen" data-n="6">6 dígitos</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`)),
+  pinOff: () => verifyPin('Código atual para desligar', async () => { L.cfg = null; await dbDel('kv', 'lock'); toast('Código de acesso desligado'); vSettings(); }),
+  lockNow: () => lockNow(),
+  bioOn: async () => {
+    try {
+      const c = await navigator.credentials.create({ publicKey: { challenge: rnd(32), rp: { name: 'Arquivo' }, user: { id: rnd(16), name: 'arquivo', displayName: 'Arquivo de documentos' }, pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }], authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' }, timeout: 60000, attestation: 'none' } });
+      L.cfg.cred = b64(c.rawId); await saveLock(); toast('Face ID ativo'); vSettings();
+    } catch (e) { alert('Não foi possível ativar o Face ID: ' + (e.message || e.name)); }
+  },
+  bioOff: async () => { L.cfg.cred = null; await saveLock(); toast('Face ID desligado'); vSettings(); },
   nfEmoji: el => { for (const b of el.parentNode.children) b.classList.remove('on'); el.classList.add('on'); },
   nfOk: createFolder,
-  cam: () => { closeSheet(); $('#camIn').click(); },
-  gal: () => { closeSheet(); $('#galIn').click(); },
+  cam: () => { closeSheet(); away(); $('#camIn').click(); },
+  gal: () => { closeSheet(); away(); $('#galIn').click(); },
   process: processDraft,
   dCancel: () => { clearDraft(); history.back(); },
   dRot: async el => { const p = S.draft.pages[+el.dataset.i]; const r = await prepImage(p.blob, 90, 4000, 0.9); URL.revokeObjectURL(p.url); p.blob = r.blob; p.url = URL.createObjectURL(r.blob); vNew(); },
@@ -680,13 +779,13 @@ const ACT = {
     const desc = [d.entity, folderPath(d.folder), d.amount != null ? 'Valor: ' + fmtEUR(d.amount) : '', d.notes].filter(Boolean).join('\n');
     const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Arquivo//PT', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT', `UID:${d.id}@arquivo`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${ymd}`, `DTEND;VALUE=DATE:${end}`, `SUMMARY:${e(sum)}`, `DESCRIPTION:${e(desc)}`,
       'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${e(sum)}`, 'TRIGGER:-P2DT15H', 'END:VALARM', 'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${e(sum)}`, 'TRIGGER:PT9H', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
-    const blob = new Blob([ics], { type: 'text/calendar' });
+    const blob = new Blob([ics], { type: 'text/calendar' }); away();
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = safeName(sum) + '.ics'; document.body.appendChild(a); a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 8000);
     toast('Toca em «Adicionar» para guardar no Calendário (avisos 3 dias antes e no próprio dia)');
   },
   backup: () => exportBackup(),
-  restore: () => $('#impIn').click(),
+  restore: () => { away(); $('#impIn').click(); },
   persist: async () => { await askPersist(); vSettings(); },
   clearRules: async () => { if (!confirm('Esquecer todas as regras aprendidas?')) return; S.rules = {}; await dbPut('kv', S.rules, 'rules'); vSettings(); },
   delFolder: async el => {
@@ -721,6 +820,8 @@ document.addEventListener('change', async e => {
     else if (k === 'name') f.name = el.value.trim() || f.name;
     else f[k] = el.value;
     await saveFolders(); S.docs.forEach(indexDoc); toast('Guardado');
+  } else if (el.dataset.lock) {
+    L.cfg[el.dataset.lock] = el.value; await saveLock(); toast('Guardado');
   } else if (el.dataset.set) {
     S.set[el.dataset.set] = el.value; await dbPut('kv', S.set, 'set'); toast('Guardado');
   }
@@ -815,6 +916,8 @@ async function importBackup(file) {
   S.rules = (await dbGet('kv', 'rules')) || {};
   S.set = Object.assign(S.set, (await dbGet('kv', 'set')) || {});
   S.docs = ((await dbAll('docs')) || []).map(indexDoc);
+  L.cfg = (await dbGet('kv', 'lock')) || null;
+  if (L.cfg) lockNow();
   window.addEventListener('hashchange', render);
   render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') {

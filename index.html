@@ -30,6 +30,18 @@
 <div id="busy" hidden><div class="busybox"><div class="spin"></div><div id="busyTxt">A trabalhar…</div><div class="bar"><i id="busyBar"></i></div></div></div>
 <div id="viewer" hidden><button id="vClose">✕</button><div id="vScroll"><img id="vImg" alt=""></div></div>
 <div id="toast" hidden></div>
+<div id="lock" hidden><div class="lk">
+  <div class="lkicon">🔒</div><div id="lkMsg">Introduz o código</div><div id="lkSub"></div>
+  <div id="dots"></div>
+  <div class="pad">
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+    <button id="lkBio" class="fx" hidden>Face ID</button><button data-k="0">0</button><button id="lkDel" class="fx">⌫</button>
+  </div>
+  <button id="lkCancel" class="lklink" hidden>Cancelar</button>
+  <button id="lkForgot" class="lklink" hidden>Esqueci-me do código</button>
+</div></div>
 <script src="vendor/tesseract.min.js"></script>
 <script src="vendor/jspdf.umd.min.js"></script>
 <script src="app.js"></script>
