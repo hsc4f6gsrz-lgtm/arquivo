@@ -169,3 +169,8 @@ details.card textarea{width:100%;min-height:260px;border:0;border-top:.5px solid
 .s-trade .row .em{font-size:15px;font-weight:700;color:#0aa5a5}
 .r2{padding:10px 14px;font-size:13px;color:var(--tx2);border-top:.5px solid var(--line)}
 .exp .eb button{color:var(--tx)}
+
+.gp{max-height:58vh;overflow-y:auto;-webkit-overflow-scrolling:touch;text-align:left}
+.gp .row{border-bottom:.5px solid var(--line)}
+.row.pick{border-bottom:.5px solid var(--line)}
+.row.pick .t{color:var(--acc)}

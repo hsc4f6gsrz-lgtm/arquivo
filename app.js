@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.7';
+const VERSION = '1.8';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1151,7 +1151,8 @@ function vCarNew() {
    <div class="f"><label>Estado</label><select data-cd="status">${Object.entries(STATUS).map(([k, [t]]) => `<option value="${k}"${f.status === k ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
    ${f.status !== 'pessoal' ? (() => {
       const elig = tradeEligible(null);
-      let h = elig.length ? `<div class="f"><label>Origem</label><select data-cd="origin"><option value="">Compra normal</option>${elig.map(a => `<option value="${a.id}"${f.origin === a.id ? ' selected' : ''}>Retoma do ${esc(fmtPlate(a.plate) + ' ' + carName(a))}</option>`).join('')}</select></div>` : '';
+      const oa = f.origin && carById(f.origin);
+      let h = elig.length || oa ? `<button class="row chev pick" data-act="pickOrigin"><span class="em">${oa ? '🔁' : '🛒'}</span><div class="mid"><div class="t">${oa ? `Retoma do ${esc(fmtPlate(oa.plate))} ${esc(carName(oa))}` : 'Compra normal'}</div><div class="s">${oa ? 'Toca para mudar' : 'Foi uma retoma? Toca para escolher o carro vendido'}</div></div></button>` : '';
       h += inp('buyDate', f.origin ? 'Data da troca' : 'Data compra', 'type="date"');
       if (f.origin) { const a = carById(f.origin); h += inp('tradeValue', 'Avaliação €', 'inputmode="decimal" placeholder="o que pagarias por ele"') + inp('tradeCash', 'Dinheiro recebido €', `inputmode="decimal" placeholder="na venda do ${esc(fmtPlate(a?.plate))}"`); }
       else h += inp('buyPrice', 'Valor compra €', 'inputmode="decimal" placeholder="0,00"') + inp('buyFrom', 'Comprado a', 'placeholder="—"');
@@ -1244,6 +1245,12 @@ $('#carIn').onchange = async e => {
     }
   } catch (err) { busy(false); alert('Erro: ' + (err.message || err)); }
 };
+let gpCb = null;
+function garagePicker(title, cars, onPick, extra = '') {
+  gpCb = onPick;
+  sheet(`<div class="grp"><p><b>${title}</b></p><div class="gp">${cars.map(x => `<button class="row carrow" data-act="gpPick" data-id="${x.id}"><img class="cth" src="${carThumb(x)}" alt=""><div class="mid"><div class="pl">${esc(fmtPlate(x.plate) || 'sem matrícula')}</div><div class="t">${esc(carName(x))}</div><div class="s">${statusBadge(x)}${x.sellDate ? ` <span class="muted">vendido ${fmtDate(x.sellDate)}</span>` : x.buyDate ? ` <span class="muted">desde ${fmtDate(x.buyDate)}</span>` : ''}</div></div></button>`).join('') || '<div class="row muted">Não há carros para escolher</div>'}</div>${extra}</div><div class="grp"><button class="it" data-act="closeSheet">Cancelar</button></div>`);
+}
+function tradeEligibleB(a) { return S.cars.filter(b => b !== a && !tradeSrc(b) && !chainOf(b).includes(a) && b.status !== 'vendido'); }
 function tradeEligible(b) { return S.cars.filter(a => a !== b && a.status !== 'pessoal' && !(a.trade && a.trade.on && a.trade.carId && carById(a.trade.carId)) && !(b && chainOf(a).includes(b))); }
 // liga o carro vendido A ao carro B recebido em retoma
 async function linkTrade(a, b, value, cash) {
@@ -1302,7 +1309,7 @@ async function vCar(id) {
       else {
         html += inp('buyPrice', 'Valor €', 'inputmode="decimal" placeholder="0,00"', money('buyPrice'));
         const elig = tradeEligible(c);
-        if (elig.length) html += `<div class="f"><label>Foi retoma?</label><select data-car="fromLink"><option value="">Não, compra normal</option>${elig.map(a => `<option value="${a.id}">Sim, do ${esc(fmtPlate(a.plate) + ' ' + carName(a))}</option>`).join('')}</select></div>`;
+        if (elig.length) html += `<button class="row chev pick" data-act="pickFromLink"><span class="em">🔁</span><div class="mid"><div class="t">Foi retoma?</div><div class="s">Toca para escolher na garagem o carro que vendeste</div></div></button>`;
       }
       html += `${inp('buyFrom', 'Comprado a', 'placeholder="—"')}${inp('km_in', 'Km', 'inputmode="numeric" placeholder="—"')}</div></div>`;
     }
@@ -1325,7 +1332,7 @@ async function vCar(id) {
           : inp('sellPrice', 'Valor venda €', 'inputmode="decimal" placeholder="—"', money('sellPrice'))}
         ${inp('sellTo', 'Vendido a', 'placeholder="—"')}${inp('km_out', 'Km venda', 'inputmode="numeric" placeholder="—"')}</div>
         ${tr.on ? (k.tCar ? `<button class="row chev" data-go="#/car/${k.tCar.id}"><span class="em">🔁</span><div class="mid"><div class="t">Carro da retoma: ${esc(fmtPlate(k.tCar.plate) || 'sem matrícula')} ${esc(carName(k.tCar))}</div><div class="s">${carCalc(k.tCar).sold ? 'já vendido' : 'por vender'}</div></div></button>`
-          : `<button class="addl" data-act="tradeNew">＋ Criar o carro da retoma</button>${S.cars.filter(x => x !== c && !tradeSrc(x)).length ? `<div class="form"><div class="f"><label>Ou ligar a</label><select data-car="tradeLink"><option value="">um carro já criado…</option>${S.cars.filter(x => x !== c && !tradeSrc(x)).map(x => `<option value="${x.id}">${esc(fmtPlate(x.plate) + ' ' + carName(x))}</option>`).join('')}</select></div></div>` : ''}`) : ''}
+          : `<button class="addl" data-act="pickTradeCar">🚗 Escolher da garagem o carro da retoma</button>`) : ''}
       </div>`;
       const byCat = {}; for (const e of c.expenses || []) byCat[e.cat || 'Outros'] = (byCat[e.cat || 'Outros'] || 0) + (+e.amount || 0);
       html += `<div class="sec s-sum"><div class="sh"><span>📊 Resumo</span><b class="${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}">${k.sold ? eur0(k.profit) : ''}</b></div><div class="sum">
@@ -1382,7 +1389,7 @@ async function carChange(el) {
   }
   if (el.dataset.car && el.dataset.car.startsWith('trade')) {
     const key = el.dataset.car; c.trade ||= { on: false, cash: null, value: null, carId: null };
-    if (key === 'tradeOn') { c.trade.on = el.checked; if (el.checked && c.trade.cash == null && c.sellPrice != null && c.sellPrice !== '') c.trade.cash = +c.sellPrice; }
+    if (key === 'tradeOn') { c.trade.on = el.checked; if (el.checked && c.trade.cash == null && c.sellPrice != null && c.sellPrice !== '') c.trade.cash = +c.sellPrice; if (el.checked && !c.trade.carId) setTimeout(() => ACT.pickTradeCar(), 250); }
     else if (key === 'tradeCash' || key === 'tradeValue') c.trade[key === 'tradeCash' ? 'cash' : 'value'] = el.value.trim() ? parseNum(el.value) : null;
     else if (key === 'tradeLink') { if (!el.value) return; const b = carById(el.value); if (!b) return; await linkTrade(c, b, c.trade.value ?? (b.buyPrice != null && b.buyPrice !== '' ? +b.buyPrice : null), c.trade.cash); return vCar(c.id); }
     const kk = carCalc(c);
@@ -1428,8 +1435,28 @@ Object.assign(ACT, {
   carSave: () => createCar(),
   carCancel: () => { S.carDraft = null; history.back(); },
   carAddDoc: () => { pickFor = null; S.pendingCar = curCar().id; addSheet(); },
+  gpPick: el => { const cb = gpCb; gpCb = null; closeSheet(); cb && cb(carById(el.dataset.id)); },
+  pickTradeCar: () => {
+    const a = curCar();
+    garagePicker('Qual foi o carro que recebeste em retoma?', tradeEligibleB(a), async b => { await linkTrade(a, b, a.trade?.value ?? (b.buyPrice != null && b.buyPrice !== '' ? +b.buyPrice : null), a.trade?.cash ?? null); toast(`Retoma: ${fmtPlate(b.plate)}`); vCar(a.id); },
+      `<button class="it b" data-act="tradeNew">＋ Ainda não está na garagem — criar agora</button>`);
+  },
+  pickFromLink: () => {
+    const b = curCar();
+    garagePicker('Este carro foi retoma de qual venda?', tradeEligible(b), async a => {
+      if (b.buyPrice == null || b.buyPrice === '') { const v = prompt(`Avaliação da retoma (o que pagaste por este carro na troca com o ${fmtPlate(a.plate)}), em €:`); if (v == null || !v.trim()) return; b.buyPrice = parseNum(v); }
+      await linkTrade(a, b, +b.buyPrice, null); await saveCar(b); toast(`Ligado como retoma do ${fmtPlate(a.plate)}`); vCar(b.id);
+    });
+  },
+  pickOrigin: () => {
+    const dr = carDraftFields();
+    garagePicker('Este carro novo foi retoma de qual venda?', tradeEligible(null), a => {
+      dr.f.origin = a.id; if (a.trade?.cash != null && !dr.f.tradeCash) dr.f.tradeCash = String(a.trade.cash).replace('.', ','); if (a.sellDate) dr.f.buyDate = a.sellDate; vCarNew();
+    }, carDraftFields().f.origin ? `<button class="it" data-act="originNone">Não, foi uma compra normal</button>` : '');
+  },
+  originNone: () => { closeSheet(); const dr = carDraftFields(); delete dr.f.origin; vCarNew(); },
   tradeNew: async () => {
-    const a = curCar(); a.trade ||= { on: true };
+    closeSheet(); const a = curCar(); a.trade ||= { on: true };
     const b = { id: uid(), created: Date.now(), expenses: [], status: 'stock', plate: '', brand: '', model: '', fromTrade: a.id, buyPrice: a.trade.value ?? null, buyDate: a.sellDate || todayISO(), buyFrom: a.sellTo || '' };
     S.cars.push(b); a.trade.carId = b.id; syncTrade(a); await saveCar(a);
     S.carTab = 'dados'; go('#/car/' + b.id); toast('Carro da retoma criado — fotografa o DUA para preencher os dados');
