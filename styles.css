@@ -98,3 +98,12 @@ details.card textarea{width:100%;min-height:260px;border:0;border-top:.5px solid
 .sp{height:8px}
 .kwbox{width:100%;min-height:160px;border:0;background:none;outline:none;padding:12px 14px;font-size:15px}
 .yr{font-size:13px;color:var(--tx2);font-weight:600;padding:10px 14px 4px;background:var(--bg)}
+
+#sheet.top{bottom:auto;top:calc(var(--sat) + 10px);animation:none}
+.nf{display:flex;flex-direction:column;gap:8px;padding:10px 14px 14px}
+.nf label{font-size:13px;color:var(--tx2);margin-top:4px}
+.nf input,.nf select{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);outline:none}
+.ems{display:flex;flex-wrap:wrap;gap:6px}
+.emb{border:0;background:var(--bg);border-radius:10px;width:42px;height:42px;font-size:22px}
+.emb.on{outline:2px solid var(--acc);background:var(--acc2)}
+.fold.add{border:1.5px dashed var(--line);background:none}.fold.add .em{color:var(--acc)}

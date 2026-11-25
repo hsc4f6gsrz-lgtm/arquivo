@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.0';
+const VERSION = '1.1';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -259,8 +259,8 @@ const kids = id => S.folders.filter(f => f.parent === id);
 function folderPath(id) { const f = folderById(id); if (!f) return 'Outros'; const p = f.parent && folderById(f.parent); return p ? `${p.name} › ${f.name}` : f.name; }
 function folderEmoji(id) { const f = folderById(id); if (!f) return '📁'; return f.emoji || (f.parent && folderById(f.parent)?.emoji) || '📁'; }
 function countIn(id) { const ids = new Set([id, ...kids(id).map(k => k.id)]); return S.docs.filter(d => ids.has(d.folder)).length; }
-function folderOptions(sel) {
-  return tops().map(t => `<optgroup label="${esc(t.emoji + ' ' + t.name)}"><option value="${t.id}"${sel === t.id ? ' selected' : ''}>${esc(t.name)} (geral)</option>${kids(t.id).map(k => `<option value="${k.id}"${sel === k.id ? ' selected' : ''}>${esc(k.name)}</option>`).join('')}</optgroup>`).join('');
+function folderOptions(sel, withNew) {
+  return (withNew ? '<option value="__new">＋ Criar pasta nova…</option>' : '') + tops().map(t => `<optgroup label="${esc(t.emoji + ' ' + t.name)}"><option value="${t.id}"${sel === t.id ? ' selected' : ''}>${esc(t.name)} (geral)</option>${kids(t.id).map(k => `<option value="${k.id}"${sel === k.id ? ' selected' : ''}>${esc(k.name)}</option>`).join('')}</optgroup>`).join('');
 }
 async function saveFolders() { await dbPut('kv', S.folders, 'folders'); }
 
@@ -333,7 +333,7 @@ async function ocrBlobs(blobs) {
 /* ---------------- Interface: utilitários ---------------- */
 function busy(on, txt, p) { const b = $('#busy'); b.hidden = !on; if (txt) $('#busyTxt').textContent = txt; $('#busyBar').style.width = p == null ? '0' : Math.round(p * 100) + '%'; $('#busyBar').parentNode.style.visibility = p == null ? 'hidden' : 'visible'; }
 let toastT; function toast(t) { const el = $('#toast'); el.textContent = t; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => el.hidden = true, 2600); }
-function sheet(html) { $('#sheet').innerHTML = html; $('#sheetWrap').hidden = false; }
+function sheet(html, top) { $('#sheet').innerHTML = html; $('#sheet').classList.toggle('top', !!top); $('#sheetWrap').hidden = false; }
 function closeSheet() { $('#sheetWrap').hidden = true; $('#sheet').innerHTML = ''; }
 $('#sheetBg').onclick = closeSheet;
 function go(h) { location.hash = h; }
@@ -383,7 +383,7 @@ function vHome() {
   ${needBk ? `<div class="note">💾 ${S.set.lastBackup ? 'Já passou mais de um mês desde a última cópia de segurança.' : 'Ainda não fizeste nenhuma cópia de segurança.'} <a href="#/s" style="color:var(--acc)">Fazer agora</a></div>` : ''}
   ${review.length ? `<h2>Por confirmar</h2><div class="card">${review.map(d => docRow(d)).join('')}</div>` : ''}
   ${dues.length ? `<h2>Prazos de pagamento</h2><div class="card">${dues.slice(0, 6).map(d => docRow(d)).join('')}</div>` : ''}
-  <h2>Pastas</h2><div class="grid">${tops().map(t => { const c = countIn(t.id); return `<button class="fold" data-go="#/f/${t.id}"><span class="em">${t.emoji || '📁'}</span><b>${esc(t.name)}</b><small>${c} doc${c === 1 ? '' : 's'}</small></button>`; }).join('')}</div>
+  <h2>Pastas</h2><div class="grid">${tops().map(t => { const c = countIn(t.id); return `<button class="fold" data-go="#/f/${t.id}"><span class="em">${t.emoji || '📁'}</span><b>${esc(t.name)}</b><small>${c} doc${c === 1 ? '' : 's'}</small></button>`; }).join('')}<button class="fold add" data-act="newFolder"><span class="em">＋</span><b>Nova pasta</b><small>criar uma pasta tua</small></button></div>
   <h2>Recentes</h2><div class="card">${recent.map(d => docRow(d)).join('')}</div>
   ${standaloneNote()}</div>`;
   const q = $('#q'); q.oninput = () => { S.q = q.value; clearTimeout(q._t); q._t = setTimeout(renderResults, 120); };
@@ -443,6 +443,7 @@ function vFolder(id) {
     for (const d of docs) { const y = (d.date || '').slice(0, 4) || 'Sem data'; if (y !== yr) { html += `<div class="yr">${y}</div>`; yr = y; } html += docRow(d); }
     html += '</div>';
   } else if (!subs.length) html += '<div class="empty"><p>Esta pasta está vazia.</p></div>';
+  if (!f.parent) html += `<button class="btn" data-act="newFolder" data-p="${id}">＋ Nova subpasta em ${esc(f.name)}</button>`;
   html += `<button class="btn" data-go="#/fe/${id}">Editar pasta e palavras-chave</button>`;
   $('#view').innerHTML = html;
 }
@@ -460,7 +461,7 @@ async function vDoc(id) {
   const dueInfo = d.due ? (d.paid ? '<span class="badge b-gr">pago</span>' : (n => n < 0 ? `<span class="badge b-red">atrasado ${-n} d</span>` : `<span class="badge b-or">${n === 0 ? 'hoje' : 'faltam ' + n + ' d'}</span>`)(daysTo(d.due))) : '';
   html += `<h2>Dados</h2><div class="card form">
    <div class="f"><label>Título</label><input data-field="title" value="${esc(d.title)}"></div>
-   <div class="f"><label>Pasta</label><select data-field="folder">${folderOptions(d.folder)}</select></div>
+   <div class="f"><label>Pasta</label><select data-field="folder">${folderOptions(d.folder, true)}</select></div>
    <div class="f"><label>Data</label><input type="date" data-field="date" value="${esc(d.date || '')}"></div>
    <div class="f"><label>Entidade</label><input data-field="entity" value="${esc(d.entity)}" placeholder="—"></div>
    <div class="f"><label>NIF</label><input data-field="nif" inputmode="numeric" value="${esc(d.nif)}" placeholder="—"></div>
@@ -508,7 +509,7 @@ async function vSettings() {
    ${pers === false ? '<button class="btn" data-act="persist">Pedir armazenamento persistente</button>' : ''}
   <h2>Os vossos NIF</h2><div class="card form"><div class="f col"><label>NIFs a ignorar na identificação da entidade (o teu, o da tua companheira…)</label><input data-set="ignoreNifs" inputmode="numeric" value="${esc(S.set.ignoreNifs || '')}" placeholder="123456789, 987654321"></div></div>
   <h2>Pastas</h2><div class="card">${tops().map(t => `<button class="row chev" data-go="#/fe/${t.id}"><span class="em">${t.emoji || '📁'}</span><div class="mid"><div class="t">${esc(t.name)}</div><div class="s">${kids(t.id).map(k => esc(k.name)).join(', ') || 'sem subpastas'}</div></div></button>`).join('')}</div>
-  <button class="btn" data-act="newTop">＋ Nova pasta</button>
+  <button class="btn" data-act="newFolder">＋ Nova pasta</button>
   <h2>Aprendizagem</h2><div class="card form"><div class="f"><label>Regras</label><span style="flex:1;text-align:right">${Object.keys(S.rules).length} aprendidas</span></div></div>
   <button class="btn red" data-act="clearRules">Esquecer o que aprendeu</button>
   <p class="muted" style="text-align:center;margin-top:20px">Arquivo ${VERSION} · nada sai deste dispositivo</p>`;
@@ -523,7 +524,7 @@ function vFolderEdit(id) {
   </div>
   <h2>Palavras-chave</h2><div class="card"><textarea class="kwbox" data-ff="kw" placeholder="uma por linha">${esc((f.kw || []).join('\n'))}</textarea></div>
   <p class="muted">Uma por linha, sem acentos. Começa com <b>!</b> as que identificam a pasta quase de certeza (por exemplo <b>!iuc</b>). A app também aprende sozinha quando corriges a pasta de um documento.</p>
-  ${isTop ? `<h2>Subpastas</h2><div class="card">${kids(id).map(k => `<button class="row chev" data-go="#/fe/${k.id}"><span class="em">📂</span><div class="mid"><div class="t">${esc(k.name)}</div></div></button>`).join('') || '<div class="row muted">Sem subpastas</div>'}</div><button class="btn" data-act="newSub" data-f="${id}">＋ Nova subpasta</button>` : ''}
+  ${isTop ? `<h2>Subpastas</h2><div class="card">${kids(id).map(k => `<button class="row chev" data-go="#/fe/${k.id}"><span class="em">📂</span><div class="mid"><div class="t">${esc(k.name)}</div></div></button>`).join('') || '<div class="row muted">Sem subpastas</div>'}</div><button class="btn" data-act="newFolder" data-p="${id}">＋ Nova subpasta</button>` : ''}
   ${id !== 'outros' ? `<button class="btn red" data-act="delFolder" data-f="${id}">Apagar pasta</button>` : ''}`;
 }
 
@@ -593,8 +594,41 @@ async function askPersist() { try { if (navigator.storage?.persist && !(await na
 function curDoc() { const m = location.hash.match(/^#\/d\/(.+)$/); return m && docById(m[1]); }
 async function setDocFolder(d, f) { d.folder = f; d.review = false; learn(d); await saveDoc(d); }
 
+const EMOJIS = ['📁', '🏠', '🚗', '💶', '🔧', '💼', '🩺', '🐕', '🧾', '🎓', '⚖️', '🏦', '✈️', '📦', '👶', '🏍️', '🔑', '❤️'];
+let nfDoc = null;
+function newFolderSheet(parent, docId) {
+  nfDoc = docId || null;
+  const p = parent && folderById(parent) && !folderById(parent).parent ? parent : '';
+  sheet(`<div class="grp"><p>Nova pasta</p><div class="nf">
+   <input id="nfName" placeholder="Nome (ex.: Casa da Quinta, Mota, Escola)" autocomplete="off" enterkeyhint="done">
+   <label>Dentro de</label>
+   <select id="nfPar"><option value="">Nenhuma (pasta principal)</option>${tops().filter(t => t.id !== 'outros').map(t => `<option value="${t.id}"${t.id === p ? ' selected' : ''}>${esc((t.emoji || '📁') + ' ' + t.name)}</option>`).join('')}</select>
+   <div id="nfEm" class="ems"${p ? ' hidden' : ''}>${EMOJIS.map((e, i) => `<button class="emb${i === 0 ? ' on' : ''}" data-act="nfEmoji">${e}</button>`).join('')}</div>
+   <label>Palavras que costumam aparecer nestes papéis (opcional)</label>
+   <input id="nfKw" placeholder="ex.: escola, propinas, matrícula escolar" autocomplete="off">
+  </div><button class="it b" data-act="nfOk">Criar pasta</button></div><div class="grp"><button class="it" data-act="closeSheet">Cancelar</button></div>`, true);
+  $('#nfPar').onchange = e => { $('#nfEm').hidden = !!e.target.value; };
+  setTimeout(() => $('#nfName')?.focus(), 80);
+}
+async function createFolder() {
+  const name = $('#nfName').value.trim(); if (!name) { $('#nfName').focus(); return toast('Escreve o nome da pasta'); }
+  const parent = $('#nfPar').value || undefined;
+  const emoji = parent ? undefined : ($('#nfEm .on')?.textContent || '📁');
+  const kw = $('#nfKw').value.split(/[,;\n]+/).map(x => norm(x.trim())).filter(Boolean).map(x => '!' + x);
+  const dup = S.folders.find(f => norm(f.name) === norm(name) && (f.parent || '') === (parent || ''));
+  if (dup) return toast('Já existe uma pasta com esse nome');
+  const f = { id: 'u-' + uid(), name, kw }; if (parent) f.parent = parent; else f.emoji = emoji;
+  if (parent) S.folders.push(f); else S.folders.splice(Math.max(0, S.folders.findIndex(x => x.id === 'outros')), 0, f);
+  await saveFolders(); closeSheet();
+  if (nfDoc) { const d = docById(nfDoc); nfDoc = null; await setDocFolder(d, f.id); toast('Arquivado em ' + folderPath(f.id)); return vDoc(d.id); }
+  toast('Pasta criada');
+  if (location.hash.startsWith('#/s') || location.hash.startsWith('#/fe')) render(); else go('#/f/' + f.id);
+}
 const ACT = {
   closeSheet, doShare,
+  newFolder: el => newFolderSheet(el.dataset.p, el.dataset.doc),
+  nfEmoji: el => { for (const b of el.parentNode.children) b.classList.remove('on'); el.classList.add('on'); },
+  nfOk: createFolder,
   cam: () => { closeSheet(); $('#camIn').click(); },
   gal: () => { closeSheet(); $('#galIn').click(); },
   process: processDraft,
@@ -604,7 +638,7 @@ const ACT = {
   dMove: el => { const i = +el.dataset.i, j = i + +el.dataset.d, a = S.draft.pages; [a[i], a[j]] = [a[j], a[i]]; vNew(); },
   confirm: async () => { const d = curDoc(); await setDocFolder(d, d.folder); toast('Arquivado em ' + folderPath(d.folder)); vDoc(d.id); },
   setFolder: async el => { const d = curDoc(); await setDocFolder(d, el.dataset.f); toast('Movido para ' + folderPath(d.folder)); vDoc(d.id); },
-  pickFolder: () => { const d = curDoc(); sheet(`<div class="grp"><p>Escolhe a pasta</p><div style="padding:8px 14px 14px"><select id="pf" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg)">${folderOptions(d.folder)}</select></div><button class="it b" data-act="pickOk">Guardar</button></div><div class="grp"><button class="it" data-act="closeSheet">Cancelar</button></div>`); },
+  pickFolder: () => { const d = curDoc(); sheet(`<div class="grp"><p>Escolhe a pasta</p><div style="padding:8px 14px 14px"><select id="pf" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg)">${folderOptions(d.folder)}</select></div><button class="it b" data-act="pickOk">Guardar</button><button class="it" data-act="newFolder" data-doc="${d.id}">＋ Criar pasta nova</button></div><div class="grp"><button class="it" data-act="closeSheet">Cancelar</button></div>`); },
   pickOk: async () => { const d = curDoc(); const f = $('#pf').value; closeSheet(); await setDocFolder(d, f); toast('Arquivado em ' + folderPath(f)); vDoc(d.id); },
   rotPage: async el => {
     const d = curDoc(); const pid = d.pages[+el.dataset.i]; const p = await dbGet('pages', pid);
@@ -655,8 +689,6 @@ const ACT = {
   restore: () => $('#impIn').click(),
   persist: async () => { await askPersist(); vSettings(); },
   clearRules: async () => { if (!confirm('Esquecer todas as regras aprendidas?')) return; S.rules = {}; await dbPut('kv', S.rules, 'rules'); vSettings(); },
-  newTop: async () => { const n = prompt('Nome da nova pasta'); if (!n) return; const f = { id: 'u-' + uid(), name: n.trim(), emoji: '📁', kw: [] }; S.folders.splice(S.folders.findIndex(x => x.id === 'outros'), 0, f); await saveFolders(); go('#/fe/' + f.id); },
-  newSub: async el => { const n = prompt('Nome da nova subpasta'); if (!n) return; const f = { id: 'u-' + uid(), parent: el.dataset.f, name: n.trim(), kw: [] }; S.folders.push(f); await saveFolders(); vFolderEdit(el.dataset.f); },
   delFolder: async el => {
     const f = folderById(el.dataset.f); const ids = [f.id, ...kids(f.id).map(k => k.id)];
     const n = S.docs.filter(d => ids.includes(d.folder)).length; const dest = f.parent || 'outros';
@@ -678,6 +710,7 @@ document.addEventListener('change', async e => {
     const d = curDoc(); if (!d) return; const k = el.dataset.field; let v = el.type === 'checkbox' ? el.checked : el.value;
     if (k === 'amount') { v = v.trim() ? parseFloat(v.replace(/\s|€/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')) : null; if (v != null && isNaN(v)) v = null; }
     if (k === 'plate') v = v.toUpperCase();
+    if (k === 'folder' && v === '__new') { el.value = d.folder; return newFolderSheet(folderById(d.folder)?.parent || d.folder, d.id); }
     if (k === 'folder') { await setDocFolder(d, v); toast('Movido para ' + folderPath(v)); return vDoc(d.id); }
     d[k] = v; await saveDoc(d);
     if (k === 'title') setBar(v || 'Documento', true, false);
@@ -784,5 +817,9 @@ async function importBackup(file) {
   S.docs = ((await dbAll('docs')) || []).map(indexDoc);
   window.addEventListener('hashchange', render);
   render();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    const had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => { });
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (!had) return; if (!S.draft && $('#busy').hidden) location.reload(); else toast('Há uma versão nova — fecha e volta a abrir a app'); });
+  }
 })();
