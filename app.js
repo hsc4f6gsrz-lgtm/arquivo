@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.2';
+const VERSION = '1.3';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -10,12 +10,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let DB;
 function idbOpen() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open('arquivo-docs', 1);
+    const r = indexedDB.open('arquivo-docs', 2);
     r.onupgradeneeded = () => {
       const d = r.result;
-      d.createObjectStore('docs', { keyPath: 'id' });
-      d.createObjectStore('pages', { keyPath: 'id' });
-      d.createObjectStore('kv');
+      for (const st of ['docs', 'pages', 'files']) if (!d.objectStoreNames.contains(st)) d.createObjectStore(st, { keyPath: 'id' });
+      if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
     };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -36,7 +35,7 @@ const dbPut = (st, v, k) => tx(st, 'readwrite', s => (k === undefined ? s.put(v)
 const dbDel = (st, k) => tx(st, 'readwrite', s => s.delete(k));
 
 /* ---------------- Estado ---------------- */
-const S = { docs: [], folders: [], rules: {}, set: { ignoreNifs: '', lastBackup: 0 }, draft: null, q: '' };
+const S = { docs: [], folders: [], rules: {}, set: { ignoreNifs: '', lastBackup: 0, lastFull: 0, bkFreq: '7', bkSnooze: 0 }, draft: null, q: '' };
 
 /* ---------------- Pastas por omissão ---------------- */
 // "!" = palavra-chave forte. Tudo sem acentos e em minúsculas.
@@ -231,7 +230,7 @@ function analyze(text) {
   const fo = folderById(folder);
   const label = type || (fo && fo.id !== 'outros' ? fo.name : 'Documento');
   const when = date ? ` · ${MES_C[+date.slice(5, 7) - 1]} ${date.slice(0, 4)}` : '';
-  const title = [label, entity && !norm(label).includes(norm(entity)) ? entity : '', plate || ''].filter(Boolean).join(' ').slice(0, 70) + when;
+  const title = [label, entity && !norm(label).includes(norm(entity)) && !norm(entity).includes(norm(label)) ? entity : '', plate || ''].filter(Boolean).join(' ').slice(0, 70) + when;
   return { folder, sugg, title, date, due, amount, nif, entity, plate, type };
 }
 
@@ -268,7 +267,7 @@ async function saveFolders() { await dbPut('kv', S.folders, 'folders'); }
 function indexDoc(d) {
   const dt = d.date ? `${d.date} ${fmtDate(d.date)} ${MESES[+d.date.slice(5, 7) - 1]} ${d.date.slice(5, 7)}/${d.date.slice(0, 4)}` : '';
   const amt = d.amount != null ? `${String(d.amount.toFixed(2)).replace('.', ',')} ${d.amount.toFixed(2)}` : '';
-  d._h = norm([d.title, d.entity, d.plate, folderPath(d.folder), d.type].join(' '));
+  d._h = norm([d.title, d.entity, d.plate, folderPath(d.folder), d.type, ...(d.files || []).map(f => f.name)].join(' '));
   d._t = norm(d.text || '');
   d._s = d._h + ' ' + norm([d.nif, d.notes, dt, amt, d.due ? 'prazo ' + fmtDate(d.due) : ''].join(' ')) + ' ' + d._t;
   d._sp = d._s.replace(/[\s\-.·]+/g, '');
@@ -342,18 +341,28 @@ $('#back').onclick = () => { if (history.length > 1 && !location.hash.match(/^#\
 $('#gear').onclick = () => go('#/s');
 
 let shareItem = null;
-function offerFile(blob, name, label) {
-  shareItem = { blob, name };
+function offerFile(blob, name, label, onDone) {
+  shareItem = { blob, name, onDone };
   sheet(`<div class="grp"><p>${esc(label || name)}</p><button class="it b" data-act="doShare">Guardar ou partilhar</button></div><div class="grp"><button class="it" data-act="closeSheet">Cancelar</button></div>`);
 }
 async function doShare() {
-  if (!shareItem) return; const { blob, name } = shareItem; closeSheet(); away();
-  const file = new File([blob], name, { type: blob.type });
+  if (!shareItem) return; const { blob, name, onDone } = shareItem; shareItem = null; closeSheet(); away();
+  const file = new File([blob], name, { type: blob.type || mimeOf(name) });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; }
+    try { await navigator.share({ files: [file] }); onDone && onDone(); return; } catch (e) { if (e.name === 'AbortError') return; }
   }
+  onDone && onDone();
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 5000);
+}
+const MIME = { pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet', txt: 'text/plain', csv: 'text/csv', rtf: 'application/rtf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', heic: 'image/heic', zip: 'application/zip' };
+function fileExt(n) { const m = /\.([a-z0-9]+)$/i.exec(n || ''); return m ? m[1].toLowerCase() : ''; }
+function mimeOf(n) { return MIME[fileExt(n)] || 'application/octet-stream'; }
+function fileIcon(n) { const e = fileExt(n); return e === 'pdf' ? '📕' : /^(docx?|odt|rtf|txt|pages)$/.test(e) ? '📝' : /^(xlsx?|ods|csv|numbers)$/.test(e) ? '📊' : /^(pptx?|odp|key)$/.test(e) ? '📽️' : /^(jpe?g|png|heic|webp|gif)$/.test(e) ? '🖼' : '📎'; }
+function fmtSize(b) { return b >= 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB'; }
+function iconThumb(n) {
+  const e = (fileExt(n) || 'doc').toUpperCase().slice(0, 4); const col = { PDF: '#d9342b', DOC: '#2b5cd9', DOCX: '#2b5cd9', ODT: '#2b5cd9', XLS: '#1e8e3e', XLSX: '#1e8e3e', ODS: '#1e8e3e', CSV: '#1e8e3e', PPT: '#d96a2b', PPTX: '#d96a2b' }[e] || '#6b6b70';
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="90" height="120"><rect x="1" y="1" width="88" height="118" rx="8" fill="#fff" stroke="#ccc"/><rect x="14" y="20" width="62" height="6" rx="3" fill="#ddd"/><rect x="14" y="34" width="50" height="6" rx="3" fill="#ddd"/><rect x="14" y="48" width="58" height="6" rx="3" fill="#ddd"/><rect x="1" y="76" width="88" height="28" fill="${col}"/><text x="45" y="96" font-family="Arial" font-weight="bold" font-size="18" fill="#fff" text-anchor="middle">${e}</text></svg>`);
 }
 function safeName(s) { return String(s || 'documento').replace(/[\/\\:*?"<>|\n\r]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 70) || 'documento'; }
 
@@ -457,7 +466,9 @@ async function vDoc(id) {
     html += `<div class="review"><p>Arquivei em <b>${esc(folderEmoji(d.folder) + ' ' + folderPath(d.folder))}</b>. Está certo?</p>
     <div class="chips"><button class="chip on" data-act="confirm">✓ Sim</button>${sugg.filter(x => x !== d.folder).map(x => `<button class="chip" data-act="setFolder" data-f="${x}">${esc(folderPath(x))}</button>`).join('')}<button class="chip" data-act="pickFolder">Outra…</button></div></div>`;
   }
-  html += `<div class="pages" id="pages">${d.pages.map((p, i) => `<div class="pg"><img data-pid="${p}" alt="Página ${i + 1}"><span class="num">${i + 1}/${d.pages.length}</span><div class="tools"><button data-act="rotPage" data-i="${i}" aria-label="Rodar">↻</button>${d.pages.length > 1 ? `<button data-act="delPage" data-i="${i}" aria-label="Apagar página">✕</button>` : ''}</div></div>`).join('')}</div>`;
+  const files = d.files || [];
+  if (d.pages.length) html += `<div class="pages" id="pages">${d.pages.map((p, i) => `<div class="pg"><img data-pid="${p}" alt="Página ${i + 1}"><span class="num">${i + 1}/${d.pages.length}</span><div class="tools"><button data-act="rotPage" data-i="${i}" aria-label="Rodar">↻</button>${d.pages.length > 1 || files.length ? `<button data-act="delPage" data-i="${i}" aria-label="Apagar página">✕</button>` : ''}</div></div>`).join('')}</div>`;
+  if (files.length) html += `<h2>Ficheiros originais</h2><div class="card">${files.map((f, i) => `<div class="row"><span class="em">${fileIcon(f.name)}</span><div class="mid"><div class="t">${esc(f.name)}</div><div class="s">${fmtSize(f.size || 0)}</div></div><button class="chip" data-act="openFile" data-i="${i}">Abrir</button></div>`).join('')}</div>`;
   const dueInfo = d.due ? (d.paid ? '<span class="badge b-gr">pago</span>' : (n => n < 0 ? `<span class="badge b-red">atrasado ${-n} d</span>` : `<span class="badge b-or">${n === 0 ? 'hoje' : 'faltam ' + n + ' d'}</span>`)(daysTo(d.due))) : '';
   html += `<h2>Dados</h2><div class="card form">
    <div class="f"><label>Título</label><input data-field="title" value="${esc(d.title)}"></div>
@@ -472,9 +483,9 @@ async function vDoc(id) {
    <div class="f col"><label>Notas</label><textarea data-field="notes" rows="2" placeholder="Escreve aqui o que quiseres">${esc(d.notes || '')}</textarea></div>
   </div>
   ${d.due ? `<button class="btn pri" data-act="calendar">📅 Adicionar prazo ao Calendário</button>` : ''}
-  <div class="btns"><button class="btn" data-act="pdf">📄 Exportar PDF</button><button class="btn" data-act="addPage">＋ Página</button></div>
+  <div class="btns">${d.origPdf ? '<button class="btn" data-act="pdf">📄 Partilhar PDF</button>' : d.pages.length ? '<button class="btn" data-act="pdf">📄 Exportar PDF</button>' : ''}<button class="btn" data-act="addPage">＋ Adicionar</button></div>
   <h2>Texto lido</h2><details class="card"><summary>${d.text ? 'Ver e corrigir o texto' : 'Sem texto'}</summary><textarea data-field="text" spellcheck="false">${esc(d.text || '')}</textarea></details>
-  <button class="btn" data-act="reocr">🔍 Ler o texto outra vez</button>
+  ${!files.length && d.pages.length ? '<button class="btn" data-act="reocr">🔍 Ler o texto outra vez</button>' : ''}
   <button class="btn red" data-act="delDoc">Apagar documento</button>
   <p class="muted" style="text-align:center;margin-top:16px">Criado em ${fmtDate(isoFromTs(d.created))}</p>`;
   const v = $('#view'); v.innerHTML = html;
@@ -484,12 +495,16 @@ function isoFromTs(ts) { const d = new Date(ts); return isoOf(d.getFullYear(), d
 
 function vNew() {
   const dr = S.draft;
-  if (!dr || !dr.pages.length) return go('#/');
-  setBar(dr.docId ? 'Adicionar páginas' : 'Novo documento', true, false);
-  $('#view').innerHTML = `<p class="muted">Confirma que as páginas estão direitas (usa ↻ para rodar). Podes juntar várias páginas no mesmo documento.</p>
-  <div class="dgrid">${dr.pages.map((p, i) => `<div class="dp"><img src="${p.url}" alt=""><span class="num">${i + 1}</span><div class="tools"><span><button data-act="dMove" data-i="${i}" data-d="-1"${i === 0 ? ' hidden' : ''}>◀</button> <button data-act="dMove" data-i="${i}" data-d="1"${i === dr.pages.length - 1 ? ' hidden' : ''}>▶</button></span><span><button data-act="dRot" data-i="${i}">↻</button> <button data-act="dDel" data-i="${i}">✕</button></span></div></div>`).join('')}</div>
-  <div class="btns"><button class="btn" data-act="cam">📷 Mais uma</button><button class="btn" data-act="gal">🖼 Galeria</button></div>
-  <button class="btn pri" data-act="process">${dr.docId ? 'Ler e juntar ao documento' : `Ler e arquivar (${dr.pages.length} página${dr.pages.length === 1 ? '' : 's'})`}</button>
+  if (!dr || (!dr.pages.length && !dr.files.length)) return go('#/');
+  setBar(dr.docId ? 'Adicionar ao documento' : 'Novo documento', true, false);
+  const nItems = dr.files.length + (dr.pages.length ? 1 : 0);
+  $('#view').innerHTML = `${dr.pages.length ? `<p class="muted">Confirma que as fotografias estão direitas (usa ↻ para rodar). As fotografias ficam como páginas do mesmo documento.</p>
+  <div class="dgrid">${dr.pages.map((p, i) => `<div class="dp"><img src="${p.url}" alt=""><span class="num">${i + 1}</span><div class="tools"><span><button data-act="dMove" data-i="${i}" data-d="-1"${i === 0 ? ' hidden' : ''}>◀</button> <button data-act="dMove" data-i="${i}" data-d="1"${i === dr.pages.length - 1 ? ' hidden' : ''}>▶</button></span><span><button data-act="dRot" data-i="${i}">↻</button> <button data-act="dDel" data-i="${i}">✕</button></span></div></div>`).join('')}</div>` : ''}
+  ${dr.files.length ? `<h2>Ficheiros</h2><div class="card">${dr.files.map((f, i) => `<div class="row"><span class="em">${fileIcon(f.name)}</span><div class="mid"><div class="t">${esc(f.name)}</div><div class="s">${fmtSize(f.blob.size)}</div></div><button class="chip" data-act="dDelF" data-i="${i}">✕</button></div>`).join('')}</div>` : ''}
+  <div class="btns"><button class="btn" data-act="cam">📷 Foto</button><button class="btn" data-act="gal">🖼 Galeria</button><button class="btn" data-act="fil">📄 Ficheiro</button></div>
+  ${dr.docId ? '<button class="btn pri" data-act="process">Ler e juntar ao documento</button>'
+    : nItems > 1 ? `<button class="btn pri" data-act="process" data-sep="1">Arquivar em separado (${nItems} documentos)</button><button class="btn" data-act="process">Juntar tudo num só documento</button>`
+    : '<button class="btn pri" data-act="process">Ler e arquivar</button>'}
   <button class="btn red" data-act="dCancel">Cancelar</button>`;
 }
 
@@ -499,10 +514,13 @@ async function vSettings() {
   let pers = null; try { pers = await navigator.storage?.persisted(); } catch (e) { }
   const mb = x => (x / 1048576).toFixed(x > 1e8 ? 0 : 1) + ' MB';
   const bio = L.cfg ? await bioAvailable() : false;
-  $('#view').innerHTML = `<h2>Cópia de segurança</h2><div class="card form"><div class="f"><label>Última</label><span style="flex:1;text-align:right">${S.set.lastBackup ? fmtDate(isoFromTs(S.set.lastBackup)) : 'nunca'}</span></div></div>
-  <button class="btn pri" data-act="backup">💾 Exportar cópia (.zip)</button>
+  const fq = S.set.bkFreq || '7';
+  $('#view').innerHTML = `<h2>Cópia de segurança</h2><div class="card form">
+   <div class="f"><label>Última</label><span style="flex:1;text-align:right">${S.set.lastBackup ? fmtDate(isoFromTs(S.set.lastBackup)) : 'nunca'}</span></div>
+   <div class="f"><label>Automática</label><select data-set="bkFreq">${[['7', 'todas as semanas'], ['14', 'de 2 em 2 semanas'], ['30', 'todos os meses'], ['off', 'desligada']].map(([v, t]) => `<option value="${v}"${fq === v ? ' selected' : ''}>${t}</option>`).join('')}</select></div></div>
+  <button class="btn pri" data-act="backup">💾 Fazer cópia completa agora</button>
   <button class="btn" data-act="restore">Importar cópia</button>
-  <p class="muted">O ficheiro .zip leva todos os documentos e as fotografias, já organizados por pastas. Guarda-o em «Ficheiros → No meu iPhone», numa pen ou no computador. Se apagares a app ou os dados do Safari, só esta cópia salva os documentos.</p>
+  <p class="muted">Com a cópia automática ligada, quando abres a app e já passou o tempo escolhido, ela prepara a cópia sozinha e só te pede um toque para a guardar: escolhe «Guardar em Ficheiros», sempre na mesma pasta (de preferência em «No meu iPhone» ou numa pen). As cópias automáticas levam só o que é novo ou mudou; uma vez por mês a cópia é completa. Para recuperar, importa os ficheiros todos, por qualquer ordem. O .zip abre-se em qualquer computador e tem os documentos organizados por pastas.</p>
   <h2>Armazenamento</h2><div class="card form">
    <div class="f"><label>Documentos</label><span style="flex:1;text-align:right">${S.docs.length}</span></div>
    ${est ? `<div class="f"><label>Espaço usado</label><span style="flex:1;text-align:right">${mb(est.usage || 0)}</span></div>` : ''}
@@ -548,57 +566,160 @@ function render() {
   else if (a === 'new') vNew();
   else if (a === 's') vSettings();
   else if (a === 'fe') vFolderEdit(b);
-  else vHome();
+  else { vHome(); setTimeout(maybeAutoBackup, 1200); }
 }
 
 /* ---------------- Ações ---------------- */
 let pickFor = null; // null = novo documento; id = adicionar ao documento
 $('#fab').onclick = () => { pickFor = null; addSheet(); };
 function addSheet() {
-  sheet(`<div class="grp"><button class="it" data-act="cam">📷 Tirar fotografia</button><button class="it" data-act="gal">🖼 Escolher da galeria</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`);
+  sheet(`<div class="grp"><button class="it" data-act="cam">📷 Tirar fotografia</button><button class="it" data-act="gal">🖼 Escolher da galeria</button><button class="it" data-act="fil">📄 Escolher ficheiro (PDF, Word…)</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`);
 }
+const isImg = f => /^image\/(jpeg|png|webp|gif|heic|heif)/.test(f.type) || /\.(jpe?g|png|webp|gif|heic|heif)$/i.test(f.name || '');
 async function onPicked(files) {
-  files = [...files].filter(f => f.type.startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name)); if (!files.length) return;
+  files = [...files]; if (!files.length) return;
   closeSheet();
-  if (!S.draft || (S.draft.docId || null) !== pickFor) { clearDraft(); S.draft = { docId: pickFor, pages: [] }; }
-  busy(true, 'A preparar as fotografias…', null);
-  try {
-    for (const f of files) { const r = await prepImage(f); S.draft.pages.push({ blob: r.blob, url: URL.createObjectURL(r.blob) }); }
-  } catch (e) { alert(e.message); }
+  if (!S.draft || (S.draft.docId || null) !== pickFor) { clearDraft(); S.draft = { docId: pickFor, pages: [], files: [] }; }
+  busy(true, 'A preparar…', null);
+  for (const f of files) {
+    if (isImg(f)) { try { const r = await prepImage(f); S.draft.pages.push({ blob: r.blob, url: URL.createObjectURL(r.blob) }); continue; } catch (e) { /* imagem que não abre: fica como ficheiro */ } }
+    S.draft.files.push({ blob: f, name: f.name || 'ficheiro', type: f.type || mimeOf(f.name) });
+  }
   busy(false);
   if (location.hash === '#/new') vNew(); else go('#/new');
 }
 function clearDraft() { if (S.draft) for (const p of S.draft.pages) URL.revokeObjectURL(p.url); S.draft = null; }
 $('#camIn').onchange = e => { onPicked(e.target.files); e.target.value = ''; };
 $('#galIn').onchange = e => { onPicked(e.target.files); e.target.value = ''; };
+$('#filIn').onchange = e => { onPicked(e.target.files); e.target.value = ''; };
 $('#impIn').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) importBackup(f); };
 
-async function processDraft() {
-  const dr = S.draft; if (!dr) return;
-  let texts;
-  try { texts = await ocrBlobs(dr.pages.map(p => p.blob)); }
-  catch (e) { busy(false); console.error(e); alert('Não consegui ler o texto: ' + (e.message || e) + '\nO documento fica guardado na mesma e podes tentar ler outra vez mais tarde.'); texts = dr.pages.map(() => ''); }
+/* ---------------- Leitura de ficheiros (PDF, Word, Excel, texto) ---------------- */
+let pdfjsP = null;
+function loadPdfjs() {
+  if (!pdfjsP) pdfjsP = new Promise((res, rej) => {
+    if (window.pdfjsLib) return res(window.pdfjsLib);
+    const sc = document.createElement('script'); sc.src = 'vendor/pdfjs/pdf.min.js';
+    sc.onload = () => { pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js'; res(pdfjsLib); };
+    sc.onerror = () => { pdfjsP = null; rej(new Error('Não consegui carregar o leitor de PDF')); };
+    document.head.appendChild(sc);
+  });
+  return pdfjsP;
+}
+const MAX_RENDER = 40;
+async function extractPdf(blob, onp) {
+  const lib = await loadPdfjs(); const base = new URL('./', location.href).href;
+  const pdf = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), cMapUrl: base + 'vendor/pdfjs/cmaps/', cMapPacked: true, standardFontDataUrl: base + 'vendor/pdfjs/standard_fonts/', isEvalSupported: false }).promise;
+  const pageTexts = [], pages = [], needOcr = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    onp && onp(i, pdf.numPages);
+    const pg = await pdf.getPage(i);
+    let t = '';
+    try { const tc = await pg.getTextContent(); t = tc.items.map(it => (it.str || '') + (it.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+\n/g, '\n').replace(/ {2,}/g, ' ').trim(); } catch (e) { }
+    pageTexts.push(t);
+    if (i <= MAX_RENDER) {
+      const v1 = pg.getViewport({ scale: 1 }); const vp = pg.getViewport({ scale: Math.min(4, 2000 / Math.max(v1.width, v1.height)) });
+      const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+      const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: x, viewport: vp }).promise;
+      pages.push(await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82))); c.width = c.height = 0;
+      if (t.replace(/\s/g, '').length < 30) needOcr.push(i - 1);
+    }
+    pg.cleanup();
+  }
+  await pdf.destroy();
+  return { pageTexts, pages, needOcr };
+}
+const decodeXml = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (m, n) => String.fromCharCode(+n)).replace(/&amp;/g, '&');
+async function extractOffice(blob, ext) {
+  const z = await readZip(blob);
+  const pick = ext === 'docx' ? ['word/document.xml'] : ext === 'xlsx' ? ['xl/sharedStrings.xml'] : ext === 'pptx' ? z.names.filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)) : ['content.xml'];
+  let out = '';
+  for (const nm of pick) {
+    const b = await z.blob(nm); if (!b) continue;
+    out += decodeXml((await b.text()).replace(/<\/(w:p|a:p|text:p|text:h|si|row)>/g, '\n').replace(/<(w:tab|text:tab)\/>/g, '\t').replace(/<w:br\/>/g, '\n').replace(/<[^>]+>/g, '')) + '\n';
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim();
+}
+async function extractFile(f, onp) {
+  const e = fileExt(f.name), t = f.type || '';
+  try {
+    if (e === 'pdf' || t === 'application/pdf') return { kind: 'pdf', ...(await extractPdf(f.blob, onp)) };
+    if (['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp'].includes(e)) return { kind: 'office', text: await extractOffice(f.blob, e) };
+    if (['txt', 'csv', 'md', 'xml', 'json', 'html', 'htm', 'rtf'].includes(e) || t.startsWith('text/')) {
+      let x = (await f.blob.text()).slice(0, 300000);
+      if (e === 'rtf') x = x.replace(/\\'([0-9a-f]{2})/gi, (m, h) => String.fromCharCode(parseInt(h, 16))).replace(/\\[a-z]+-?\d* ?|[{}]/gi, '');
+      if (/^html?$/.test(e)) x = x.replace(/<[^>]+>/g, ' ');
+      return { kind: 'text', text: x };
+    }
+  } catch (err) { console.warn(err); if (e === 'pdf') toast('Não consegui abrir o PDF: ' + (err.message || err)); }
+  return { kind: 'other', text: '' };
+}
+// junta fotografias e ficheiros: devolve páginas, texto e ficheiros originais
+async function collect(g) {
+  const pageBlobs = [...g.photos], texts = g.photos.map(() => ''), ocrIdx = g.photos.map((_, i) => i), extra = [];
+  for (const f of g.files) {
+    const r = await extractFile(f, (i, n) => busy(true, `A abrir «${f.name}» (página ${i} de ${n})…`, i / n));
+    f.kind = r.kind;
+    if (r.kind === 'pdf') {
+      const base = pageBlobs.length;
+      r.pages.forEach((b, i) => { pageBlobs.push(b); texts.push(r.pageTexts[i] || ''); if (r.needOcr.includes(i)) ocrIdx.push(base + i); });
+      if (r.pageTexts.length > r.pages.length) extra.push(r.pageTexts.slice(r.pages.length).join('\n\n'));
+    } else if (r.text) extra.push(r.text);
+  }
+  const todo = ocrIdx.slice(0, 30);
+  if (todo.length) {
+    let ot = [];
+    try { ot = await ocrBlobs(todo.map(i => pageBlobs[i])); } catch (e) { console.error(e); toast('Não consegui ler o texto de algumas páginas'); }
+    todo.forEach((pi, k) => { if (ot[k]) texts[pi] = ot[k]; });
+  }
+  return { pageBlobs, text: [...texts, ...extra].filter(x => x && x.trim()).join('\n\n'), files: g.files, pdfOnly: !g.photos.length && g.files.length === 1 && g.files[0].kind === 'pdf' };
+}
+async function storeParts(docId, c) {
+  const pages = [], files = [];
+  for (const b of c.pageBlobs) { const pid = uid(); await dbPut('pages', { id: pid, docId, blob: b }); pages.push(pid); }
+  for (const f of c.files) { const fid = uid(); const type = f.type || mimeOf(f.name); await dbPut('files', { id: fid, docId, name: f.name, type, blob: f.blob }); files.push({ id: fid, name: f.name, type, size: f.blob.size }); }
+  return { pages, files };
+}
+async function buildDoc(g) {
+  const c = await collect(g);
   busy(true, 'A arquivar…', 1);
+  const a = analyze(c.text); const id = uid();
+  const { pages, files } = await storeParts(id, c);
+  const fname = (g.files[0]?.name || '').replace(/\.[^.]+$/, '');
+  const title = fname && !a.type && !a.entity ? fname : a.title;
+  const d = { id, created: Date.now(), pages, files, origPdf: c.pdfOnly ? files[0].id : null, thumb: c.pageBlobs.length ? await makeThumb(c.pageBlobs[0]) : iconThumb(g.files[0]?.name), text: c.text, title, folder: a.folder, sugg: a.sugg, date: a.date || todayISO(), due: a.due || '', paid: false, amount: a.amount, nif: a.nif, entity: a.entity, plate: a.plate || '', type: a.type, notes: '', review: true };
+  S.docs.push(d); await saveDoc(d);
+  return d;
+}
+async function processDraft(el) {
+  const dr = S.draft; if (!dr) return;
+  const photos = dr.pages.map(p => p.blob);
   try {
     if (dr.docId) {
       const d = docById(dr.docId); if (!d) throw new Error('Documento não encontrado');
-      for (let i = 0; i < dr.pages.length; i++) { const pid = uid(); await dbPut('pages', { id: pid, docId: d.id, blob: dr.pages[i].blob }); d.pages.push(pid); }
-      d.text = [d.text, ...texts].filter(Boolean).join('\n\n');
+      const c = await collect({ photos, files: dr.files });
+      busy(true, 'A arquivar…', 1);
+      const r = await storeParts(d.id, c);
+      d.pages.push(...r.pages); d.files = [...(d.files || []), ...r.files]; d.origPdf = null;
+      d.text = [d.text, c.text].filter(Boolean).join('\n\n');
+      if (!d.pages.length || d.thumb?.startsWith('data:image/svg')) { if (c.pageBlobs.length && d.pages.length === r.pages.length) d.thumb = await makeThumb(c.pageBlobs[0]); }
       await saveDoc(d); clearDraft(); busy(false);
-      history.replaceState(null, '', '#/d/' + d.id); render(); toast('Páginas adicionadas');
+      history.replaceState(null, '', '#/d/' + d.id); render(); toast('Adicionado ao documento');
       return;
     }
-    const text = texts.join('\n\n');
-    const a = analyze(text);
-    const id = uid(); const pages = [];
-    for (const p of dr.pages) { const pid = uid(); await dbPut('pages', { id: pid, docId: id, blob: p.blob }); pages.push(pid); }
-    const d = { id, created: Date.now(), pages, thumb: await makeThumb(dr.pages[0].blob), text, title: a.title, folder: a.folder, sugg: a.sugg, date: a.date || todayISO(), due: a.due || '', paid: false, amount: a.amount, nif: a.nif, entity: a.entity, plate: a.plate || '', type: a.type, notes: '', review: true };
-    S.docs.push(d); await saveDoc(d);
-    clearDraft(); busy(false);
-    askPersist();
-    history.replaceState(null, '', '#/d/' + id); render();
-  } catch (e) { busy(false); alert('Erro ao guardar: ' + (e.message || e)); }
+    const groups = el && el.dataset.sep ? [...(photos.length ? [{ photos, files: [] }] : []), ...dr.files.map(f => ({ photos: [], files: [f] }))] : [{ photos, files: dr.files }];
+    const made = [];
+    for (let k = 0; k < groups.length; k++) {
+      if (groups.length > 1) busy(true, `Documento ${k + 1} de ${groups.length}…`, k / groups.length);
+      made.push(await buildDoc(groups[k]));
+    }
+    clearDraft(); busy(false); askPersist();
+    if (made.length === 1) { history.replaceState(null, '', '#/d/' + made[0].id); render(); }
+    else { history.replaceState(null, '', '#/'); render(); toast(`${made.length} documentos arquivados — confirma as pastas em «Por confirmar»`); }
+  } catch (e) { busy(false); console.error(e); alert('Erro ao arquivar: ' + (e.message || e)); }
 }
+
 async function askPersist() { try { if (navigator.storage?.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch (e) { } }
 
 function curDoc() { const m = location.hash.match(/^#\/d\/(.+)$/); return m && docById(m[1]); }
@@ -643,7 +764,7 @@ async function tryUnlock(v) {
   f.n++; if (f.n >= 5) f.until = Date.now() + 30000 * 2 ** Math.min(f.n - 5, 6);
   setFails(f); padErr(f.n >= 5 ? `Código errado. Espera ${Math.ceil((f.until - Date.now()) / 1000)} s` : 'Código errado');
 }
-function unlock() { L.locked = false; hidePad(); }
+function unlock() { L.locked = false; hidePad(); setTimeout(maybeAutoBackup, 700); }
 function away() { L.grace = Date.now() + 5 * 60000; } // câmara, galeria, partilhar: não bloquear ao voltar
 document.addEventListener('visibilitychange', () => {
   if (!L.cfg) return;
@@ -730,10 +851,14 @@ const ACT = {
   nfOk: createFolder,
   cam: () => { closeSheet(); away(); $('#camIn').click(); },
   gal: () => { closeSheet(); away(); $('#galIn').click(); },
-  process: processDraft,
+  fil: () => { closeSheet(); away(); $('#filIn').click(); },
+  dDelF: el => { S.draft.files.splice(+el.dataset.i, 1); if (!S.draft.pages.length && !S.draft.files.length) { clearDraft(); history.back(); } else vNew(); },
+  openFile: async el => { const d = curDoc(); const f = d.files[+el.dataset.i]; const r = await dbGet('files', f.id); if (!r) return toast('Ficheiro não encontrado'); offerFile(r.blob, f.name, `«${f.name}» — abrir, guardar ou partilhar`); },
+  bkLater: async () => { S.set.bkSnooze = Date.now() + 864e5; await dbPut('kv', S.set, 'set'); closeSheet(); toast('Lembro-te amanhã'); },
+  process: el => processDraft(el),
   dCancel: () => { clearDraft(); history.back(); },
   dRot: async el => { const p = S.draft.pages[+el.dataset.i]; const r = await prepImage(p.blob, 90, 4000, 0.9); URL.revokeObjectURL(p.url); p.blob = r.blob; p.url = URL.createObjectURL(r.blob); vNew(); },
-  dDel: el => { const p = S.draft.pages.splice(+el.dataset.i, 1)[0]; URL.revokeObjectURL(p.url); if (!S.draft.pages.length) { clearDraft(); history.back(); } else vNew(); },
+  dDel: el => { const p = S.draft.pages.splice(+el.dataset.i, 1)[0]; URL.revokeObjectURL(p.url); if (!S.draft.pages.length && !S.draft.files.length) { clearDraft(); history.back(); } else vNew(); },
   dMove: el => { const i = +el.dataset.i, j = i + +el.dataset.d, a = S.draft.pages; [a[i], a[j]] = [a[j], a[i]]; vNew(); },
   confirm: async () => { const d = curDoc(); await setDocFolder(d, d.folder); toast('Arquivado em ' + folderPath(d.folder)); vDoc(d.id); },
   setFolder: async el => { const d = curDoc(); await setDocFolder(d, el.dataset.f); toast('Movido para ' + folderPath(d.folder)); vDoc(d.id); },
@@ -745,7 +870,7 @@ const ACT = {
     if (+el.dataset.i === 0) d.thumb = await makeThumb(r.blob);
     await saveDoc(d); busy(false); vDoc(d.id);
   },
-  delPage: async el => { const d = curDoc(); if (!confirm('Apagar esta página?')) return; const pid = d.pages.splice(+el.dataset.i, 1)[0]; await dbDel('pages', pid); dropURL(pid); if (+el.dataset.i === 0) { const p = await dbGet('pages', d.pages[0]); d.thumb = await makeThumb(p.blob); } await saveDoc(d); vDoc(d.id); },
+  delPage: async el => { const d = curDoc(); if (!confirm('Apagar esta página?')) return; const pid = d.pages.splice(+el.dataset.i, 1)[0]; await dbDel('pages', pid); dropURL(pid); d.origPdf = null; if (+el.dataset.i === 0) { const p = d.pages[0] && await dbGet('pages', d.pages[0]); d.thumb = p ? await makeThumb(p.blob) : iconThumb(d.files?.[0]?.name); } await saveDoc(d); vDoc(d.id); },
   addPage: () => { pickFor = curDoc().id; addSheet(); },
   reocr: async () => {
     const d = curDoc(); if (!confirm('Ler o texto outra vez? O texto atual (e as correções que fizeste) é substituído.')) return;
@@ -753,9 +878,12 @@ const ACT = {
     try { const t = await ocrBlobs(blobs); d.text = t.join('\n\n'); const a = analyze(d.text); for (const k of ['date', 'due', 'amount', 'nif', 'entity', 'plate', 'type']) if (!d[k] && a[k]) d[k] = a[k]; d.sugg = a.sugg; await saveDoc(d); busy(false); vDoc(d.id); toast('Texto atualizado'); }
     catch (e) { busy(false); alert('Não consegui ler: ' + (e.message || e)); }
   },
-  delDoc: async () => { const d = curDoc(); if (!confirm('Apagar este documento de vez?')) return; for (const pid of d.pages) { await dbDel('pages', pid); dropURL(pid); } await dbDel('docs', d.id); S.docs = S.docs.filter(x => x !== d); toast('Documento apagado'); history.back(); },
+  delDoc: async () => { const d = curDoc(); if (!confirm('Apagar este documento de vez?')) return; for (const pid of d.pages) { await dbDel('pages', pid); dropURL(pid); } for (const f of d.files || []) await dbDel('files', f.id); await dbDel('docs', d.id); S.docs = S.docs.filter(x => x !== d); toast('Documento apagado'); history.back(); },
   pdf: async () => {
-    const d = curDoc(); busy(true, 'A criar o PDF…', null);
+    const d = curDoc();
+    if (d.origPdf) { const f = await dbGet('files', d.origPdf); if (f) return offerFile(f.blob, f.name, `«${f.name}»`); }
+    if (!d.pages.length) return toast('Este documento não tem páginas para PDF');
+    busy(true, 'A criar o PDF…', null);
     try {
       const { jsPDF } = window.jspdf; let pdf = null;
       for (const pid of d.pages) {
@@ -853,7 +981,7 @@ async function makeZip(files, onp) {
 async function readZip(file) {
   const tl = Math.min(file.size, 65557); const tail = new DataView(await file.slice(file.size - tl).arrayBuffer());
   let p = -1; for (let i = tl - 22; i >= 0; i--) if (tail.getUint32(i, true) === 0x06054b50) { p = i; break; }
-  if (p < 0) throw new Error('O ficheiro não é uma cópia válida (.zip).');
+  if (p < 0) throw new Error('O ficheiro não é um .zip válido.');
   const n = tail.getUint16(p + 10, true), cs = tail.getUint32(p + 12, true), co = tail.getUint32(p + 16, true);
   const cd = new DataView(await file.slice(co, co + cs).arrayBuffer()); const dec = new TextDecoder(); const ent = {}; let q = 0;
   for (let k = 0; k < n; k++) {
@@ -862,31 +990,66 @@ async function readZip(file) {
     q += 46 + nl + el + cl;
   }
   return {
+    names: Object.keys(ent),
     has: nm => !!ent[nm],
-    async blob(nm, type) { const e = ent[nm]; if (!e) return null; if (e.method !== 0) throw new Error('A cópia foi recomprimida por outra app e não a consigo ler.'); const h = new DataView(await file.slice(e.lo, e.lo + 30).arrayBuffer()); const s = e.lo + 30 + h.getUint16(26, true) + h.getUint16(28, true); return file.slice(s, s + e.size, type); },
+    async blob(nm, type) {
+      const e = ent[nm]; if (!e) return null;
+      const h = new DataView(await file.slice(e.lo, e.lo + 30).arrayBuffer()); const s = e.lo + 30 + h.getUint16(26, true) + h.getUint16(28, true);
+      const raw = file.slice(s, s + e.size);
+      if (e.method === 0) return type ? new Blob([raw], { type }) : raw;
+      if (e.method === 8 && window.DecompressionStream) return new Response(raw.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+      throw new Error('Formato de compressão não suportado.');
+    },
   };
 }
+async function buildBackup(docs, full, onp) {
+  const files = [], meta = { app: 'arquivo', version: 2, partial: !full, exported: new Date().toISOString(), folders: S.folders, rules: S.rules, set: { ignoreNifs: S.set.ignoreNifs }, docs: [] };
+  const used = new Set();
+  for (const d of sortDocs([...docs])) {
+    const fo = folderById(d.folder), par = fo && fo.parent ? folderById(fo.parent) : null;
+    const dir = 'documentos/' + [par ? par.name : null, fo ? fo.name : 'Outros'].filter(Boolean).map(safeName).join('/') + '/' + safeName(`${d.date || ''} ${d.title}`);
+    let dd = dir, k = 2; while (used.has(dd)) dd = dir + ' (' + k++ + ')'; used.add(dd);
+    const pages = [], fl = [], names = new Set();
+    for (let i = 0; i < d.pages.length; i++) { const p = await dbGet('pages', d.pages[i]); if (!p) continue; const path = `${dd}/pagina-${i + 1}.jpg`; files.push({ name: path, data: p.blob }); pages.push({ id: p.id, path }); }
+    for (const f of d.files || []) {
+      const r = await dbGet('files', f.id); if (!r) continue;
+      let nm = safeName(f.name), c = 2; while (names.has(nm)) nm = c++ + '-' + safeName(f.name); names.add(nm);
+      files.push({ name: `${dd}/${nm}`, data: r.blob }); fl.push({ ...f, path: `${dd}/${nm}` });
+    }
+    if (d.text) files.push({ name: `${dd}/texto.txt`, data: d.text });
+    meta.docs.push({ ...clean(d), pages, files: fl });
+  }
+  files.unshift({ name: 'arquivo.json', data: JSON.stringify(meta) });
+  return makeZip(files, onp);
+}
+async function markBackup(full) { S.set.lastBackup = Date.now(); if (full) S.set.lastFull = Date.now(); S.set.bkSnooze = 0; await dbPut('kv', S.set, 'set'); if (location.hash === '#/s') vSettings(); }
 async function exportBackup() {
   if (!S.docs.length) return toast('Ainda não há documentos');
   busy(true, 'A preparar a cópia…', 0);
   try {
-    const files = [], meta = { app: 'arquivo', version: 1, exported: new Date().toISOString(), folders: S.folders, rules: S.rules, set: { ignoreNifs: S.set.ignoreNifs }, docs: [] };
-    const used = new Set();
-    for (const d of sortDocs([...S.docs])) {
-      const fo = folderById(d.folder), par = fo && fo.parent ? folderById(fo.parent) : null;
-      let dir = 'documentos/' + [par ? par.name : null, fo ? fo.name : 'Outros'].filter(Boolean).map(safeName).join('/') + '/' + safeName(`${d.date || ''} ${d.title}`);
-      let dd = dir, k = 2; while (used.has(dd)) dd = dir + ' (' + k++ + ')'; used.add(dd);
-      const pages = [];
-      for (let i = 0; i < d.pages.length; i++) { const p = await dbGet('pages', d.pages[i]); if (!p) continue; const path = `${dd}/pagina-${i + 1}.jpg`; files.push({ name: path, data: p.blob }); pages.push({ id: p.id, path }); }
-      if (d.text) files.push({ name: `${dd}/texto.txt`, data: d.text });
-      meta.docs.push({ ...clean(d), pages });
-    }
-    files.unshift({ name: 'arquivo.json', data: JSON.stringify(meta) });
-    const zip = await makeZip(files, p => busy(true, 'A preparar a cópia…', p));
-    S.set.lastBackup = Date.now(); await dbPut('kv', S.set, 'set');
+    const zip = await buildBackup(S.docs, true, p => busy(true, 'A preparar a cópia…', p));
     busy(false);
-    offerFile(zip, `Arquivo-copia-${todayISO()}.zip`, `Cópia pronta: ${S.docs.length} documentos, ${(zip.size / 1048576).toFixed(1)} MB. Escolhe «Guardar em Ficheiros».`);
+    offerFile(zip, `Arquivo-copia-completa-${todayISO()}.zip`, `Cópia pronta: ${S.docs.length} documentos, ${fmtSize(zip.size)}. Escolhe «Guardar em Ficheiros».`, () => markBackup(true));
   } catch (e) { busy(false); alert('Erro na cópia: ' + e.message); }
+}
+let bkChecked = 0;
+async function maybeAutoBackup() {
+  if (Date.now() - bkChecked < 12 * 3600e3 || L.locked || (S.set.bkFreq || '7') === 'off' || !S.docs.length) return;
+  if (!['', '#', '#/'].includes(location.hash) || S.draft || !$('#busy').hidden || !$('#sheetWrap').hidden) return;
+  const last = S.set.lastBackup || 0;
+  if (Date.now() - last < (+S.set.bkFreq || 7) * 864e5 || Date.now() < (S.set.bkSnooze || 0)) return;
+  const changed = S.docs.filter(d => (d.updated || d.created) > last);
+  if (last && !changed.length) return;
+  bkChecked = Date.now();
+  const full = !S.set.lastFull || Date.now() - S.set.lastFull > 30 * 864e5;
+  const lbl = 'A preparar a cópia de segurança automática…';
+  busy(true, lbl, 0);
+  try {
+    const zip = await buildBackup(full ? S.docs : changed, full, p => busy(true, lbl, p));
+    busy(false);
+    shareItem = { blob: zip, name: `Arquivo-${full ? 'copia-completa' : 'copia-novos'}-${todayISO()}.zip`, onDone: () => markBackup(full) };
+    sheet(`<div class="grp"><p><b>💾 Cópia de segurança automática</b><br>${full ? `Cópia completa: ${S.docs.length} documentos` : `${changed.length} documento${changed.length === 1 ? '' : 's'} novo${changed.length === 1 ? '' : 's'} ou alterado${changed.length === 1 ? '' : 's'}`} · ${fmtSize(zip.size)}<br>Toca em «Guardar» e escolhe «Guardar em Ficheiros».</p><button class="it b" data-act="doShare">Guardar</button></div><div class="grp"><button class="it" data-act="bkLater">Lembrar amanhã</button></div>`);
+  } catch (e) { busy(false); console.error(e); }
 }
 async function importBackup(file) {
   busy(true, 'A ler a cópia…', 0);
@@ -896,16 +1059,20 @@ async function importBackup(file) {
     for (const f of meta.folders || []) if (!folderById(f.id)) S.folders.push(f);
     S.rules = { ...meta.rules, ...S.rules };
     if (!S.set.ignoreNifs && meta.set?.ignoreNifs) S.set.ignoreNifs = meta.set.ignoreNifs;
-    let added = 0, skipped = 0;
+    let added = 0, updated = 0, skipped = 0;
     for (let i = 0; i < meta.docs.length; i++) {
       busy(true, 'A importar…', i / meta.docs.length);
-      const m = meta.docs[i]; if (docById(m.id)) { skipped++; continue; }
-      const ids = [];
-      for (const p of m.pages) { const b = await z.blob(p.path, 'image/jpeg'); if (!b) continue; const blob = new Blob([await b.arrayBuffer()], { type: 'image/jpeg' }); await dbPut('pages', { id: p.id, docId: m.id, blob }); ids.push(p.id); }
-      const d = { ...m, pages: ids }; S.docs.push(d); await saveDoc(d); added++;
+      const m = meta.docs[i]; const ex = docById(m.id);
+      if (ex && (ex.updated || ex.created || 0) >= (m.updated || m.created || 0)) { skipped++; continue; }
+      if (ex) { for (const pid of ex.pages) { await dbDel('pages', pid); dropURL(pid); } for (const f of ex.files || []) await dbDel('files', f.id); S.docs = S.docs.filter(x => x !== ex); }
+      const ids = [], fl = [];
+      for (const p of m.pages || []) { const b = await z.blob(p.path); if (!b) continue; await dbPut('pages', { id: p.id, docId: m.id, blob: new Blob([await b.arrayBuffer()], { type: 'image/jpeg' }) }); ids.push(p.id); }
+      for (const f of m.files || []) { const b = await z.blob(f.path); if (!b) continue; await dbPut('files', { id: f.id, docId: m.id, name: f.name, type: f.type, blob: new Blob([await b.arrayBuffer()], { type: f.type || mimeOf(f.name) }) }); const { path, ...rest } = f; fl.push(rest); }
+      const d = { ...m, pages: ids, files: fl }; S.docs.push(indexDoc(d)); await dbPut('docs', clean(d));
+      ex ? updated++ : added++;
     }
     await saveFolders(); await dbPut('kv', S.rules, 'rules'); await dbPut('kv', S.set, 'set');
-    busy(false); alert(`Cópia importada: ${added} documentos novos${skipped ? `, ${skipped} já existiam` : ''}.`); render();
+    busy(false); alert(`Cópia importada: ${added} documentos novos${updated ? `, ${updated} atualizados` : ''}${skipped ? `, ${skipped} já estavam iguais` : ''}.`); render();
   } catch (e) { busy(false); alert('Erro ao importar: ' + e.message); }
 }
 

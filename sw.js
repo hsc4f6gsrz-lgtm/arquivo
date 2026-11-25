@@ -1,8 +1,8 @@
-const V = 'arquivo-v3';
+const V = 'arquivo-v4';
 const CORE = [
   './', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
-  'vendor/tesseract.min.js', 'vendor/worker.min.js', 'vendor/jspdf.umd.min.js',
+  'vendor/tesseract.min.js', 'vendor/worker.min.js', 'vendor/jspdf.umd.min.js', 'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js',
   'vendor/core/tesseract-core-simd-lstm.wasm.js', 'vendor/core/tesseract-core-lstm.wasm.js',
   'lang/por.traineddata.gz'
 ];
