@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Arquivo</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Arquivo">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header id="bar">
+  <button id="back" class="hbtn" aria-label="Voltar" hidden>‹ <span>Voltar</span></button>
+  <h1 id="title">Arquivo</h1>
+  <button id="gear" class="hbtn right" aria-label="Definições">⚙︎</button>
+</header>
+<main id="view"></main>
+<button id="fab" aria-label="Novo documento">＋</button>
+<input type="file" id="camIn" accept="image/*" capture="environment" hidden>
+<input type="file" id="galIn" accept="image/*" multiple hidden>
+<input type="file" id="impIn" accept=".zip,application/zip" hidden>
+<div id="sheetWrap" hidden><div id="sheetBg"></div><div id="sheet"></div></div>
+<div id="busy" hidden><div class="busybox"><div class="spin"></div><div id="busyTxt">A trabalhar…</div><div class="bar"><i id="busyBar"></i></div></div></div>
+<div id="viewer" hidden><button id="vClose">✕</button><div id="vScroll"><img id="vImg" alt=""></div></div>
+<div id="toast" hidden></div>
+<script src="vendor/tesseract.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
