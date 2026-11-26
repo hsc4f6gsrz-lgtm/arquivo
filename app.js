@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.9';
+const VERSION = '1.10';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1148,6 +1148,8 @@ function carCalc(c) {
   const pending = sold && tr && tVal > 0 && !tCarSold ? tVal : 0; // lucro ainda «preso» no carro da retoma
   return { buy, exp, cost, sold, sellVal, profit, margin: sold && cost ? profit / cost : null, days, perDay: sold && days ? profit / days : null, tr, tVal, tCar, pending, cashIn: tr ? (+tr.cash || 0) : sellVal, src };
 }
+// preço esperado = média entre o preço pedido e o mínimo que aceitas (ou o que estiver preenchido)
+function expectedSale(c) { const a = c.askPrice != null && c.askPrice !== '' ? +c.askPrice : null, m = c.minPrice != null && c.minPrice !== '' ? +c.minPrice : null; return a != null && m != null ? (a + m) / 2 : a ?? m; }
 function chainOf(c) {
   let r = c, g = 0; while (tradeSrc(r) && g++ < 30) r = tradeSrc(r);
   const arr = [r]; g = 0;
@@ -1163,7 +1165,8 @@ function carThumb(c) { return c.thumb || 'data:image/svg+xml;utf8,' + encodeURIC
 function statusBadge(c) { const [t, cl] = STATUS[c.status] || STATUS.stock; return `<span class="badge ${cl}">${t}</span>`; }
 function carRow(c) {
   const k = carCalc(c);
-  const line = c.status === 'pessoal' ? `Gastos: ${eur0(k.exp)}` : k.sold ? `Lucro ${eur0(k.profit)}` : `Investido ${eur0(k.cost)}${k.days != null ? ` · ${k.days} dias` : ''}`;
+  const ex = expectedSale(c);
+  const line = c.status === 'pessoal' ? `Gastos: ${eur0(k.exp)}` : k.sold ? `Lucro ${eur0(k.profit)}` : `Investido ${eur0(k.cost)}${ex != null ? ` · potencial ${eur0(ex - k.cost)}` : ''}${k.days != null ? ` · ${k.days} dias` : ''}`;
   return `<button class="row carrow" data-go="#/car/${c.id}"><img class="cth" src="${carThumb(c)}" alt=""><div class="mid"><div class="pl">${esc(fmtPlate(c.plate) || 'sem matrícula')}</div><div class="t">${esc(carName(c))}${c.year ? ` <span class="muted">${esc(String(c.year).slice(0, 4))}</span>` : ''}</div><div class="s">${statusBadge(c)} <span class="${k.sold ? (k.profit >= 0 ? 'pos' : 'neg') : ''}">${line}</span></div>${k.src ? `<div class="s">🔁 retoma do ${esc(fmtPlate(k.src.plate))}</div>` : ''}${k.pending ? `<div class="s">⏳ ${eur0(k.pending)} ainda no carro da retoma</div>` : ''}</div></button>`;
 }
 function vGarage() {
@@ -1180,7 +1183,7 @@ function vGarage() {
   const list = S.cars.filter(c => flt === 'todos' || (flt === 'stock' ? ['stock', 'venda'].includes(c.status) : c.status === flt))
     .sort((a, b) => (a.status === 'vendido') - (b.status === 'vendido') || (b.sellDate || b.buyDate || '').localeCompare(a.sellDate || a.buyDate || '') || b.created - a.created);
   let html = '';
-  if (biz.length) html += `<div class="stats"><div class="st"><small>Lucro ${yr}</small><b class="${profit >= 0 ? 'pos' : 'neg'}">${eur0(profit)}</b>${pend ? `<small>já em dinheiro: <b class="${profit - pend >= 0 ? 'pos' : 'neg'}">${eur0(profit - pend)}</b></small><small>${eur0(pend)} em retomas por vender</small>` : ''}</div><div class="st"><small>Vendidos ${yr}</small><b>${sold.length}</b></div><div class="st"><small>Em stock</small><b>${stock.length}</b><small>${eur0(sum(stock.map(c => carCalc(c).cost)))} investidos</small></div><div class="st"><small>Média até vender</small><b>${dd.length ? Math.round(sum(dd) / dd.length) + ' dias' : '—'}</b><small>${sold.length ? 'lucro médio ' + eur0(profit / sold.length) : ''}</small></div></div>
+  if (biz.length) html += `<div class="stats"><div class="st"><small>Lucro ${yr}</small><b class="${profit >= 0 ? 'pos' : 'neg'}">${eur0(profit)}</b>${pend ? `<small>já em dinheiro: <b class="${profit - pend >= 0 ? 'pos' : 'neg'}">${eur0(profit - pend)}</b></small><small>${eur0(pend)} em retomas por vender</small>` : ''}</div><div class="st"><small>Vendidos ${yr}</small><b>${sold.length}</b></div><div class="st"><small>Em stock</small><b>${stock.length}</b><small>${eur0(sum(stock.map(c => carCalc(c).cost)))} investidos</small>${(() => { const wp = stock.filter(c => expectedSale(c) != null), pot = sum(wp.map(c => expectedSale(c) - carCalc(c).cost)), miss = stock.length - wp.length; return wp.length ? `<small>lucro potencial: <b class="${pot >= 0 ? 'pos' : 'neg'}">${eur0(pot)}</b></small>${miss ? `<small>${miss} sem preço pedido/mínimo</small>` : ''}` : stock.length ? '<small>põe o preço pedido e o mínimo para ver o lucro potencial</small>' : ''; })()}</div><div class="st"><small>Média até vender</small><b>${dd.length ? Math.round(sum(dd) / dd.length) + ' dias' : '—'}</b><small>${sold.length ? 'lucro médio ' + eur0(profit / sold.length) : ''}</small></div></div>
   ${years.length > 1 ? `<div class="chips" style="margin-top:8px">${years.map(y => `<button class="chip${y === yr ? ' on' : ''}" data-act="carYear" data-y="${y}">${y}</button>`).join('')}</div>` : ''}`;
   html += `<div class="chips" style="margin:14px 0 8px">${[['todos', 'Todos'], ['stock', 'Em stock'], ['vendido', 'Vendidos'], ['pessoal', 'Pessoais']].map(([k, t]) => `<button class="chip${flt === k ? ' on' : ''}" data-act="carFlt" data-f="${k}">${t}</button>`).join('')}</div>`;
   html += list.length ? `<div class="card">${list.map(carRow).join('')}</div>` : `<div class="empty"><div class="big">🚗</div><p>${S.cars.length ? 'Nenhum carro neste filtro.' : 'Ainda não tens carros. Cria o primeiro: o mais rápido é fotografar o Documento Único.'}</p></div>`;
@@ -1472,6 +1475,7 @@ async function vCar(id) {
        ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>${k.perDay != null ? `<div class="r"><span>Lucro por dia</span><b>${eur0(k.perDay)}</b></div>` : ''}` : ''}
        ${k.src ? `<div class="r sub"><span>${k.profit >= 0 ? '✓ A avaliação da retoma confirmou-se' : '⚠️ A retoma foi avaliada acima do que rendeu'}</span><span></span></div>` : ''}`
         : `<div class="r"><span>Vender acima de</span><b>${eur0(k.cost)}</b></div><div class="r sub"><span>para não perder dinheiro</span><span></span></div>
+       ${expectedSale(c) != null && c.askPrice && c.minPrice ? `<div class="r"><span>Lucro potencial (média)</span><b class="${expectedSale(c) - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(expectedSale(c) - k.cost)}</b></div>` : ''}
        ${c.askPrice ? `<div class="r"><span>Lucro ao preço pedido</span><b class="${c.askPrice - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(c.askPrice - k.cost)}</b></div>` : ''}
        ${c.minPrice ? `<div class="r"><span>Lucro ao preço mínimo</span><b class="${c.minPrice - k.cost >= 0 ? 'pos' : 'neg'}">${eur0(c.minPrice - k.cost)}</b></div>` : ''}
        ${k.days != null ? `<div class="r"><span>Dias em stock</span><b>${k.days}</b></div>` : ''}`}
