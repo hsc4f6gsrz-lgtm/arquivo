@@ -174,3 +174,10 @@ details.card textarea{width:100%;min-height:260px;border:0;border-top:.5px solid
 .gp .row{border-bottom:.5px solid var(--line)}
 .row.pick{border-bottom:.5px solid var(--line)}
 .row.pick .t{color:var(--acc)}
+
+#tap{position:fixed;inset:0;z-index:90;background:#000;display:flex;flex-direction:column}
+#tapTop{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:calc(var(--sat) + 10px) 14px 10px;color:#fff;font-weight:600}
+#tapTop button{border:0;background:rgba(255,255,255,.2);color:#fff;border-radius:16px;padding:7px 12px}
+#tapWrap{position:relative;flex:1;overflow:auto;-webkit-overflow-scrolling:touch}
+#tapImg{width:100%;display:block}
+#tapBox{position:absolute;border:3px solid #ffd400;border-radius:6px;box-shadow:0 0 0 2000px rgba(0,0,0,.35);pointer-events:none}

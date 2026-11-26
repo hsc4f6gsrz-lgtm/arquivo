@@ -1,4 +1,4 @@
-const V = 'arquivo-v9';
+const V = 'arquivo-v10';
 const CORE = [
   './', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',

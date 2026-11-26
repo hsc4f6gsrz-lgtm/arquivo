@@ -1,6 +1,6 @@
 'use strict';
 /* Arquivo — arquivo de documentos em papel. Tudo fica guardado só neste dispositivo. */
-const VERSION = '1.8';
+const VERSION = '1.9';
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -163,11 +163,7 @@ function findNifs(n) {
   if (!out.length) { const rx2 = /(?<!\d)([125689]\d{8})(?!\d)/g; while ((m = rx2.exec(n))) if (nifValid(m[1]) && !out.includes(m[1])) out.push(m[1]); }
   return out;
 }
-function findPlate(t) {
-  const rx = /\b([A-Z]{2}|\d{2})\s?[-–·.]\s?([A-Z]{2}|\d{2})\s?[-–·.]\s?([A-Z]{2}|\d{2})\b/g; let m;
-  while ((m = rx.exec(t))) { const g = [m[1], m[2], m[3]]; if (g.some(x => /\d/.test(x)) && g.some(x => /[A-Z]/.test(x))) return g.join('-'); }
-  return null;
-}
+function findPlate(t) { const b = bestPlate(t); return b && b.sc <= -0.38 ? b.plate : null; }
 const ENTITIES = [
   ['autoridade tributaria', 'Autoridade Tributária'], ['seguranca social', 'Segurança Social'], ['e-redes', 'E-Redes'], ['edp', 'EDP'], ['galp', 'Galp'], ['endesa', 'Endesa'], ['iberdrola', 'Iberdrola'], ['goldenergy', 'Goldenergy'],
   ['meo', 'MEO'], ['vodafone', 'Vodafone'], ['nowo', 'NOWO'], ['digi', 'DIGI'], ['epal', 'EPAL'], ['smas', 'SMAS'], ['via verde', 'Via Verde'], ['brisa', 'Brisa'], ['ascendi', 'Ascendi'],
@@ -383,8 +379,49 @@ async function getWorker() {
   });
   return ocrWorker;
 }
+/* Pré-processamento para o OCR: tira sombras e fundo, aumenta o contraste, usa mais resolução */
+function normalizeImageData(id) {
+  const { width: w, height: h, data: d } = id, n = w * h, g = new Uint8ClampedArray(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) g[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8;
+  const f = 16, sw = Math.ceil(w / f), sh = Math.ceil(h / f), cell = new Float32Array(sw * sh);
+  for (let cy = 0; cy < sh; cy++) for (let cx = 0; cx < sw; cx++) {
+    let sm = 0, c = 0; const y1 = Math.min(h, (cy + 1) * f), x1 = Math.min(w, (cx + 1) * f);
+    for (let y = cy * f; y < y1; y += 2) for (let x = cx * f; x < x1; x += 2) { sm += g[y * w + x]; c++; }
+    cell[cy * sw + cx] = sm / c;
+  }
+  const R = 2, dil = new Float32Array(sw * sh); // fundo = o mais claro à volta (o texto é escuro)
+  for (let cy = 0; cy < sh; cy++) for (let cx = 0; cx < sw; cx++) {
+    let mx = 0; for (let yy = Math.max(0, cy - R); yy <= Math.min(sh - 1, cy + R); yy++) for (let xx = Math.max(0, cx - R); xx <= Math.min(sw - 1, cx + R); xx++) { const v = cell[yy * sw + xx]; if (v > mx) mx = v; }
+    dil[cy * sw + cx] = mx;
+  }
+  const B = 3, bg = new Float32Array(sw * sh);
+  for (let cy = 0; cy < sh; cy++) for (let cx = 0; cx < sw; cx++) {
+    let sm = 0, c = 0; for (let yy = Math.max(0, cy - B); yy <= Math.min(sh - 1, cy + B); yy++) for (let xx = Math.max(0, cx - B); xx <= Math.min(sw - 1, cx + B); xx++) { sm += dil[yy * sw + xx]; c++; }
+    bg[cy * sw + cx] = Math.max(30, sm / c);
+  }
+  for (let y = 0; y < h; y++) {
+    const fy = Math.min(sh - 1.001, Math.max(0, y / f - 0.5)), y0 = fy | 0, ty = fy - y0, y1 = Math.min(sh - 1, y0 + 1);
+    for (let x = 0; x < w; x++) {
+      const fx = Math.min(sw - 1.001, Math.max(0, x / f - 0.5)), x0 = fx | 0, tx = fx - x0, x1 = Math.min(sw - 1, x0 + 1);
+      const b = (bg[y0 * sw + x0] * (1 - tx) + bg[y0 * sw + x1] * tx) * (1 - ty) + (bg[y1 * sw + x0] * (1 - tx) + bg[y1 * sw + x1] * tx) * ty;
+      let v = g[y * w + x] * 255 / b; v = (v - 70) * 255 / (232 - 70);
+      const o = (y * w + x) * 4; d[o] = d[o + 1] = d[o + 2] = v < 0 ? 0 : v > 255 ? 255 : v;
+    }
+  }
+  return id;
+}
+async function ocrPrep(src, extraRot = 0) {
+  const blob = src instanceof Blob ? src : (src.orig || src.blob); const rot = ((src instanceof Blob ? 0 : (src.rot || 0)) + extraRot) % 360;
+  const im = await loadImg(blob); let w = im.naturalWidth, h = im.naturalHeight; const k = Math.min(1, 3000 / Math.max(w, h)); w = Math.round(w * k); h = Math.round(h * k);
+  const c = document.createElement('canvas'); c.width = rot % 180 ? h : w; c.height = rot % 180 ? w : h;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.translate(c.width / 2, c.height / 2); x.rotate(rot * Math.PI / 180); x.drawImage(im, -w / 2, -h / 2, w, h); x.setTransform(1, 0, 0, 1, 0, 0);
+  const id = x.getImageData(0, 0, c.width, c.height); normalizeImageData(id); x.putImageData(id, 0, 0);
+  const out = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9)); c.width = c.height = 0; return out;
+}
+const ocrQuality = r => { const ws = (r.data.words || []).filter(w => w.confidence > 60 && /[A-Za-zÀ-ÿ]{3,}/.test(w.text)); return ws.length * (r.data.confidence || 0) / 100; };
 async function ocrBlobs(blobs) {
-  const texts = [];
+  const texts = []; ocrBlobs.rots = [];
   busy(true, 'A preparar o leitor de texto…', 0);
   try {
     const w = await getWorker();
@@ -392,8 +429,15 @@ async function ocrBlobs(blobs) {
       const lbl = blobs.length > 1 ? `A ler a página ${i + 1} de ${blobs.length}…` : 'A ler o documento…';
       busy(true, lbl, i / blobs.length);
       ocrLog = m => { if (m.status === 'recognizing text') busy(true, lbl, (i + m.progress) / blobs.length); };
-      const r = await w.recognize(blobs[i]);
-      texts.push((r.data.text || '').replace(/\n{3,}/g, '\n\n').trim());
+      let best = await w.recognize(await ocrPrep(blobs[i])), q = ocrQuality(best), bestRot = 0;
+      if ((best.data.confidence || 0) < 65 || q < 8) { // talvez a página esteja de lado ou ao contrário
+        for (const rr of [90, 270, 180]) {
+          busy(true, lbl.replace('…', '') + ' (a tentar outra orientação)…', (i + 0.5) / blobs.length);
+          const r2 = await w.recognize(await ocrPrep(blobs[i], rr)), q2 = ocrQuality(r2);
+          if (q2 > q * 1.5 + 2) { best = r2; q = q2; bestRot = rr; if ((r2.data.confidence || 0) > 70) break; }
+        }
+      }
+      texts.push((best.data.text || '').replace(/\n{3,}/g, '\n\n').trim()); ocrBlobs.rots.push(bestRot);
     }
   } finally { ocrLog = null; }
   return texts;
@@ -560,7 +604,7 @@ async function vDoc(id) {
   </div>
   ${d.due ? `<button class="btn pri" data-act="calendar">📅 Adicionar prazo ao Calendário</button>` : ''}
   <div class="btns">${d.origPdf ? '<button class="btn" data-act="pdf">📄 Partilhar PDF</button>' : d.pages.length ? '<button class="btn" data-act="pdf">📄 Exportar PDF</button>' : ''}<button class="btn" data-act="addPage">＋ Adicionar</button></div>
-  <h2>Texto lido</h2><details class="card"><summary>${d.text ? 'Ver e corrigir o texto' : 'Sem texto'}</summary><textarea data-field="text" spellcheck="false">${esc(d.text || '')}</textarea></details>
+  <h2>Texto lido</h2><button class="btn" data-act="pasteText">📋 Colar texto lido pelo iPhone</button><details class="card"><summary>${d.text ? 'Ver e corrigir o texto' : 'Sem texto'}</summary><textarea data-field="text" spellcheck="false">${esc(d.text || '')}</textarea></details>
   ${!files.length && d.pages.length ? '<button class="btn" data-act="reocr">🔍 Ler o texto outra vez</button>' : ''}
   <button class="btn red" data-act="delDoc">Apagar documento</button>
   <p class="muted" style="text-align:center;margin-top:16px">Criado em ${fmtDate(isoFromTs(d.created))}</p>`;
@@ -650,7 +694,7 @@ function render() {
 let pickFor = null; // null = novo documento; id = adicionar ao documento
 $('#fab').onclick = () => { pickFor = null; const m = location.hash.match(/^#\/car\/(?!new)(.+)$/); S.pendingCar = m ? m[1] : null; addSheet(); };
 function addSheet() {
-  sheet(`<div class="grp"><button class="it" data-act="cam">📷 Tirar fotografia</button><button class="it" data-act="gal">🖼 Escolher da galeria</button><button class="it" data-act="fil">📄 Escolher ficheiro (PDF, Word…)</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`);
+  sheet(`<div class="grp"><p>💡 Para papéis com muito texto: na app <b>Ficheiros</b> → <b>⋯</b> → <b>Digitalizar documentos</b> o iPhone endireita e limpa a folha; depois escolhe esse PDF em «Escolher ficheiro».</p><button class="it" data-act="cam">📷 Tirar fotografia</button><button class="it" data-act="gal">🖼 Escolher da galeria</button><button class="it" data-act="fil">📄 Escolher ficheiro (PDF, Word…)</button></div><div class="grp"><button class="it b" data-act="closeSheet">Cancelar</button></div>`);
 }
 const isImg = f => /^image\/(jpeg|png|webp|gif|heic|heif)/.test(f.type) || /\.(jpe?g|png|webp|gif|heic|heif)$/i.test(f.name || '');
 async function onPicked(files) {
@@ -659,7 +703,7 @@ async function onPicked(files) {
   if (!S.draft || (S.draft.docId || null) !== pickFor || (S.draft.carId || null) !== (S.pendingCar || null)) { clearDraft(); S.draft = { docId: pickFor, pages: [], files: [], carId: S.pendingCar || null }; }
   busy(true, 'A preparar…', null);
   for (const f of files) {
-    if (isImg(f)) { try { const r = await prepImage(f); S.draft.pages.push({ blob: r.blob, url: URL.createObjectURL(r.blob) }); continue; } catch (e) { /* imagem que não abre: fica como ficheiro */ } }
+    if (isImg(f)) { try { const r = await prepImage(f); S.draft.pages.push({ blob: r.blob, url: URL.createObjectURL(r.blob), orig: f, rot: 0 }); continue; } catch (e) { /* imagem que não abre: fica como ficheiro */ } }
     S.draft.files.push({ blob: f, name: f.name || 'ficheiro', type: f.type || mimeOf(f.name) });
   }
   busy(false);
@@ -747,8 +791,13 @@ async function collect(g) {
   const todo = ocrIdx.slice(0, 30);
   if (todo.length) {
     let ot = [];
-    try { ot = await ocrBlobs(todo.map(i => pageBlobs[i])); } catch (e) { console.error(e); toast('Não consegui ler o texto de algumas páginas'); }
-    todo.forEach((pi, k) => { if (ot[k]) texts[pi] = ot[k]; });
+    const srcs = todo.map(i => (g.photoSrc && i < g.photos.length) ? g.photoSrc[i] : pageBlobs[i]);
+    try { ot = await ocrBlobs(srcs); } catch (e) { console.error(e); toast('Não consegui ler o texto de algumas páginas'); }
+    const rots = ocrBlobs.rots || [];
+    for (let k = 0; k < todo.length; k++) {
+      const pi = todo[k]; if (ot[k]) texts[pi] = ot[k];
+      if (rots[k]) { const sr = srcs[k]; pageBlobs[pi] = (sr instanceof Blob ? await prepImage(sr, rots[k]) : await prepImage(sr.orig, (sr.rot + rots[k]) % 360)).blob; } // endireita a página guardada
+    }
   }
   return { pageBlobs, text: [...texts, ...extra].filter(x => x && x.trim()).join('\n\n'), files: g.files, pdfOnly: !g.photos.length && g.files.length === 1 && g.files[0].kind === 'pdf' };
 }
@@ -773,11 +822,11 @@ async function buildDoc(g) {
 }
 async function processDraft(el) {
   const dr = S.draft; if (!dr) return;
-  const photos = dr.pages.map(p => p.blob);
+  const photos = dr.pages.map(p => p.blob), photoSrc = dr.pages.map(p => ({ orig: p.orig || p.blob, rot: p.orig ? (p.rot || 0) : 0 }));
   try {
     if (dr.docId) {
       const d = docById(dr.docId); if (!d) throw new Error('Documento não encontrado');
-      const c = await collect({ photos, files: dr.files });
+      const c = await collect({ photos, photoSrc, files: dr.files });
       busy(true, 'A arquivar…', 1);
       const r = await storeParts(d.id, c);
       d.pages.push(...r.pages); d.files = [...(d.files || []), ...r.files]; d.origPdf = null;
@@ -787,7 +836,7 @@ async function processDraft(el) {
       history.replaceState(null, '', '#/d/' + d.id); render(); toast('Adicionado ao documento');
       return;
     }
-    const groups = (el && el.dataset.sep ? [...(photos.length ? [{ photos, files: [] }] : []), ...dr.files.map(f => ({ photos: [], files: [f] }))] : [{ photos, files: dr.files }]).map(g => ({ ...g, carId: dr.carId }));
+    const groups = (el && el.dataset.sep ? [...(photos.length ? [{ photos, photoSrc, files: [] }] : []), ...dr.files.map(f => ({ photos: [], files: [f] }))] : [{ photos, photoSrc, files: dr.files }]).map(g => ({ ...g, carId: dr.carId }));
     const made = [];
     for (let k = 0; k < groups.length; k++) {
       if (groups.length > 1) busy(true, `Documento ${k + 1} de ${groups.length}…`, k / groups.length);
@@ -936,7 +985,7 @@ const ACT = {
   bkLater: async () => { S.set.bkSnooze = Date.now() + 864e5; await dbPut('kv', S.set, 'set'); closeSheet(); toast('Lembro-te amanhã'); },
   process: el => processDraft(el),
   dCancel: () => { clearDraft(); history.back(); },
-  dRot: async el => { const p = S.draft.pages[+el.dataset.i]; const r = await prepImage(p.blob, 90, 4000, 0.9); URL.revokeObjectURL(p.url); p.blob = r.blob; p.url = URL.createObjectURL(r.blob); vNew(); },
+  dRot: async el => { const p = S.draft.pages[+el.dataset.i]; p.rot = ((p.rot || 0) + 90) % 360; const r = p.orig ? await prepImage(p.orig, p.rot) : await prepImage(p.blob, 90, 4000, 0.9); URL.revokeObjectURL(p.url); p.blob = r.blob; p.url = URL.createObjectURL(r.blob); vNew(); },
   dDel: el => { const p = S.draft.pages.splice(+el.dataset.i, 1)[0]; URL.revokeObjectURL(p.url); if (!S.draft.pages.length && !S.draft.files.length) { clearDraft(); history.back(); } else vNew(); },
   dMove: el => { const i = +el.dataset.i, j = i + +el.dataset.d, a = S.draft.pages; [a[i], a[j]] = [a[j], a[i]]; vNew(); },
   confirm: async () => { const d = curDoc(); await setDocFolder(d, d.folder); toast('Arquivado em ' + folderPath(d.folder)); vDoc(d.id); },
@@ -951,6 +1000,16 @@ const ACT = {
   },
   delPage: async el => { const d = curDoc(); if (!confirm('Apagar esta página?')) return; const pid = d.pages.splice(+el.dataset.i, 1)[0]; await dbDel('pages', pid); dropURL(pid); d.origPdf = null; if (+el.dataset.i === 0) { const p = d.pages[0] && await dbGet('pages', d.pages[0]); d.thumb = p ? await makeThumb(p.blob) : iconThumb(d.files?.[0]?.name); } await saveDoc(d); vDoc(d.id); },
   addPage: () => { pickFor = curDoc().id; addSheet(); },
+  pasteText: async () => {
+    const d = curDoc(); let t = '';
+    try { t = await navigator.clipboard.readText(); } catch (e) { }
+    if (!t || t.trim().length < 5) return alert('Não há texto copiado.\n\nPara usar o leitor do iPhone (muito bom):\n1. Abre a fotografia do papel na app Fotos (ou toca e mantém na imagem aqui).\n2. Toca no ícone de Texto ao Vivo (o quadrado com linhas) → «Selecionar tudo» → «Copiar».\n3. Volta aqui e toca outra vez em «Colar texto lido pelo iPhone».');
+    if (d.text && d.text.trim() && !confirm('Substituir o texto lido pela app pelo texto que copiaste?')) return;
+    d.text = t.trim(); const a = analyze(d.text);
+    for (const k of ['date', 'due', 'amount', 'nif', 'entity', 'plate', 'type']) if (a[k] && (d.review || !d[k])) d[k] = a[k];
+    if (d.review) { d.folder = a.folder; d.sugg = a.sugg; d.title = a.title; }
+    await saveDoc(d); vDoc(d.id); toast('Texto do iPhone guardado');
+  },
   reocr: async () => {
     const d = curDoc(); if (!confirm('Ler o texto outra vez? O texto atual (e as correções que fizeste) é substituído.')) return;
     const blobs = []; for (const pid of d.pages) blobs.push((await dbGet('pages', pid)).blob);
@@ -1143,6 +1202,7 @@ function vCarNew() {
   $('#view').innerHTML = `${dr.thumb ? `<img class="carhero" src="${dr.thumb}" alt="">` : ''}
   <p class="muted">O mais rápido é fotografar o <b>Documento Único</b>: leio a matrícula, a marca, o modelo e o resto. A fotografia do carro serve de capa (tento ler a matrícula, mas numa foto de rua nem sempre consigo).</p>
   <div class="btns"><button class="btn${dr.dua ? '' : ' pri'}" data-act="carDua">🪪 ${dr.dua ? 'DUA lido ✓' : 'Fotografar DUA'}</button><button class="btn" data-act="carPic">🚗 ${dr.photo ? 'Mudar foto' : 'Foto do carro'}</button></div>
+  ${dr.photoOrig ? '<button class="btn" data-act="carTapPlate">📍 Ler a matrícula tocando na foto</button>' : ''}
   <h2>Dados</h2><div class="card form">
    ${inp('plate', 'Matrícula', 'autocapitalize="characters" placeholder="AA-00-BB"')}
    ${inp('brand', 'Marca', 'placeholder="Toyota"')}
@@ -1187,27 +1247,84 @@ async function grayCrop(blob, x0, y0, x1, y1, maxW = 2000) {
   const x = c.getContext('2d'); x.filter = 'grayscale(1) contrast(1.4)'; x.drawImage(im, sx, sy, sw, sh, 0, 0, c.width, c.height);
   const out = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9)); c.width = c.height = 0; return out;
 }
-function plateIn(t) {
-  t = (t || '').toUpperCase().replace(/[|]/g, 'I');
-  const rx = /\b([A-Z0-9]{2})\s?[-–·.:]?\s?([A-Z0-9]{2})\s?[-–·.:]?\s?([A-Z0-9]{2})\b/g; let m;
-  while ((m = rx.exec(t))) {
-    const g = [m[1], m[2], m[3]].map(x => /\d/.test(x) && /[A-Z]/.test(x) ? x.replace(/O/g, '0').replace(/[IL]/g, '1') : x);
-    if (g.every(x => /^\d{2}$|^[A-Z]{2}$/.test(x)) && g.some(x => /\d/.test(x)) && g.some(x => /[A-Z]/.test(x))) return g.join('-');
+const L2D = { O: '0', Q: '0', D: '0', U: '0', I: '1', L: '1', J: '1', T: '7', Z: '2', S: '5', B: '8', G: '6', A: '4' }, D2L = { 0: 'O', 1: 'I', 2: 'Z', 4: 'A', 5: 'S', 6: 'G', 7: 'T', 8: 'B' };
+const PLATE_FMT = [['L', 'D', 'L'], ['D', 'L', 'D'], ['D', 'D', 'L'], ['L', 'D', 'D']];
+// procura uma matrícula portuguesa (AA-00-AA, 00-AA-00, 00-00-AA, AA-00-00), corrigindo confusões do OCR (O/0, I/1, S/5, B/8…)
+function bestPlate(text) {
+  let best = null;
+  const FMT = [['D', 'D', 'L'], ['L', 'D', 'L'], ['D', 'L', 'D'], ['L', 'D', 'D']];
+  const tryGroups = (gs, base) => {
+    FMT.forEach((fm, fi) => {
+      let cost = 0, ok = true; const out = [];
+      for (let k = 0; k < 3 && ok; k++) {
+        let gg = '';
+        for (const ch of gs[k]) {
+          if (fm[k] === 'D') { if (/\d/.test(ch)) gg += ch; else if (L2D[ch]) { gg += L2D[ch]; cost += 1; } else ok = false; }
+          else { if (/[A-Z]/.test(ch)) gg += ch; else if (D2L[ch]) { gg += D2L[ch]; cost += 1.2; } else ok = false; }
+        }
+        out.push(gg);
+      }
+      if (ok && cost <= 1.2) { const sc = base + cost + fi * 0.01; if (!best || sc < best.sc) best = { plate: out.join('-'), sc }; }
+    });
+  };
+  for (let line of String(text || '').toUpperCase().split('\n')) {
+    line = line.replace(/^\W*P\s+(?=[A-Z0-9]{2}\W)/, ''); // «P» da faixa azul
+    // 1) com separadores: AA-00-AA, AA·00·AA, AA 00 AA
+    const rx = /(?:^|[^A-Z0-9])([A-Z0-9]{2})(\s?[-–·.:]\s?|\s)([A-Z0-9]{2})(\s?[-–·.:]\s?|\s)([A-Z0-9]{2})(?=$|[^A-Z0-9])/g; let m;
+    while ((m = rx.exec(line))) { const p1 = /[-–·.:]/.test(m[2]), p2 = /[-–·.:]/.test(m[4]); tryGroups([m[1], m[3], m[5]], p1 && p2 ? -0.5 : !p1 && !p2 ? 0 : 0.4); rx.lastIndex = m.index + 1; }
+    // 2) sem separadores, mas a começar no início de uma palavra
+    const toks = line.split(/[^A-Z0-9]+/).filter(Boolean);
+    for (let t = 0; t < toks.length; t++) {
+      const s = toks.slice(t, t + 3).join('');
+      if (s.length >= 6 && toks[t].length <= 6) tryGroups([s.slice(0, 2), s.slice(2, 4), s.slice(4, 6)], s.length === 6 ? 0.3 : 0.6);
+    }
   }
-  return '';
+  return best;
+}
+function plateIn(t) { const b = bestPlate(t); return b && b.sc <= 1.3 ? b.plate : ''; }
+async function cropPrep(blob, x0, y0, x1, y1, outW = 1400) {
+  const im = await loadImg(blob); const W = im.naturalWidth, H = im.naturalHeight;
+  const sx = Math.max(0, x0 * W), sy = Math.max(0, y0 * H), sw = Math.min(W - sx, (x1 - x0) * W), sh = Math.min(H - sy, (y1 - y0) * H);
+  const k = Math.min(4, outW / sw); const c = document.createElement('canvas'); c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+  const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(im, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const id = x.getImageData(0, 0, c.width, c.height); normalizeImageData(id); x.putImageData(id, 0, 0);
+  const out = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92)); c.width = c.height = 0; return out;
 }
 async function readPlate(blob) {
   const w = await getWorker();
-  const zones = [[0, 0, 1, 1], [0, 0.4, 1, 1], [0.15, 0.45, 0.85, 0.95], [0, 0.2, 1, 0.8]];
+  const zones = [[0, 0, 1, 1], [0, 0.35, 1, 1], [0.1, 0.45, 0.9, 0.95], [0, 0.2, 1, 0.8], [0.2, 0.55, 0.8, 0.9]];
+  let best = null;
   try {
     for (let i = 0; i < zones.length; i++) {
       busy(true, 'A procurar a matrícula na fotografia…', i / zones.length);
-      const g = await grayCrop(blob, ...zones[i]);
-      const p = plateIn((await w.recognize(g)).data.text); if (p) return p;
+      const b = bestPlate((await w.recognize(await cropPrep(blob, ...zones[i], 2400))).data.text);
+      if (b && (!best || b.sc < best.sc)) best = b; if (best && best.sc <= 0) break;
     }
-    return '';
+    return best && best.sc <= 1.3 ? best.plate : '';
   } catch (e) { console.warn(e); return ''; }
   finally { busy(false); }
+}
+// o utilizador toca na matrícula: lê só essa zona, em vários tamanhos
+function tapPlate(blob) {
+  return new Promise(resolve => {
+    const ov = $('#tap'), img = $('#tapImg'), box = $('#tapBox'); const u = URL.createObjectURL(blob);
+    img.src = u; ov.hidden = false; box.hidden = true; $('#tapMsg').textContent = 'Toca no centro da matrícula';
+    const done = v => { ov.hidden = true; img.onclick = null; $('#tapCancel').onclick = null; URL.revokeObjectURL(u); resolve(v); };
+    $('#tapCancel').onclick = () => done('');
+    img.onclick = async e => {
+      const r = img.getBoundingClientRect(); const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      const ar = img.naturalWidth / img.naturalHeight;
+      box.style.left = (fx * 100 - 15) + '%'; box.style.top = `calc(${fy * 100}% - ${r.width * 0.3 / 4.5 / 2}px)`; box.style.width = '30%'; box.style.height = (r.width * 0.3 / 4.5) + 'px'; box.hidden = false;
+      $('#tapMsg').textContent = 'A ler…';
+      const w = await getWorker(); let best = null;
+      for (const bw of [0.22, 0.32, 0.45, 0.16]) {
+        const bh = bw * ar / 4.2 * 1.6;
+        const t = (await w.recognize(await cropPrep(blob, fx - bw / 2, fy - bh / 2, fx + bw / 2, fy + bh / 2))).data.text;
+        const b = bestPlate(t); if (b && (!best || b.sc < best.sc)) best = b; if (best && best.sc <= 0) break;
+      }
+      if (best) done(best.plate); else { $('#tapMsg').textContent = 'Não consegui ler. Toca outra vez, mais ao centro da matrícula'; box.hidden = true; }
+    };
+  });
 }
 let carPickMode = null;
 function pickCarImage(mode) { carPickMode = mode; away(); $('#carIn').click(); }
@@ -1235,10 +1352,17 @@ $('#carIn').onchange = async e => {
       const r = await prepImage(file, 0, 1600, 0.8); const thumb = await makeThumb(r.blob);
       if (mode === 'pic') {
         const dr = carDraftFields(); dr.photo = r.blob; dr.thumb = thumb;
-        if (!dr.f.plate) { const p = await readPlate(r.blob); if (p) { dr.f.plate = p; toast(`Parece-me ${p} — confirma`); } else toast('Não consegui ler a matrícula na fotografia — escreve-a ou fotografa o DUA'); }
+        dr.photoOrig = file;
+        if (!dr.f.plate) {
+          let p = await readPlate(file);
+          if (!p) { busy(false); p = await tapPlate(file); }
+          if (p) { dr.f.plate = p; toast(`Li ${p} — confirma`); } else toast('Não consegui ler a matrícula — escreve-a ou fotografa o DUA');
+        }
         busy(false); vCarNew();
       } else {
-        const c = curCar(); if (c.photo) await dbDel('pages', c.photo);
+        const c = curCar();
+        if (!c.plate) { let p = await readPlate(file); if (!p) { busy(false); p = await tapPlate(file); } if (p) { c.plate = p; toast(`Li ${p}`); } }
+        if (c.photo) await dbDel('pages', c.photo);
         c.photo = 'cp-' + uid(); await dbPut('pages', { id: c.photo, docId: 'car:' + c.id, blob: r.blob }); c.thumb = thumb; await saveCar(c); dropURL(c.photo);
         busy(false); vCar(c.id);
       }
@@ -1428,6 +1552,7 @@ Object.assign(ACT, {
   carYear: el => { S.carYear = +el.dataset.y; vGarage(); },
   carTab: el => { S.carTab = el.dataset.t; vCar(curCar().id); },
   carDua: () => pickCarImage('dua'),
+  carTapPlate: async () => { const dr = carDraftFields(); const p = await tapPlate(dr.photoOrig); if (p) { dr.f.plate = p; toast(`Li ${p} — confirma`); vCarNew(); } },
   carPic: () => pickCarImage('pic'),
   carPhotoNew: () => pickCarImage('photo'),
   carDuaRead: () => pickCarImage('dua-car'),
